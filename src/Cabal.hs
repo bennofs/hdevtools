@@ -63,7 +63,7 @@ getBuildInfoOptions bi = do
   let o'' = map ("-X" ++) $ map CT.display $ defaultExtensions bi
   let deps = targetBuildDepends bi
       o''' = map (("-package " ++) . CT.display . pkgName) deps
-  return $ o' ++ o'' ++ o ++ o'''
+  return $ o' ++ o'' ++ o ++ o''' ++ ["-hide-all-packages"]
 
   where pkgName (Dependency n _) = n
 

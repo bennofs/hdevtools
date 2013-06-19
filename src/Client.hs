@@ -51,7 +51,7 @@ startClientReadLoop h = do
     msg <- hGetLine h
     let clientDirective = readMaybe msg
     case clientDirective of
-        Just (ClientStdout out) -> putStrLn out >> startClientReadLoop h
+        Just (ClientStdout out) -> putStrLn out >> putStrLn >> startClientReadLoop h
         Just (ClientStderr err) -> hPutStrLn stderr err >> startClientReadLoop h
         Just (ClientExit exitCode) -> hClose h >> exitWith exitCode
         Just (ClientUnexpectedError err) -> hClose h >> unexpectedError err
