@@ -4,17 +4,25 @@ module CommandLoop
     , startCommandLoop
     ) where
 
+import Control.Exception (SomeException(..))
 import Control.Monad (when)
 import Data.IORef
 import Data.List (find)
+import Data.Maybe
+import Distribution.PackageDescription (hsSourceDirs, allBuildInfo)
+import Distribution.ParseUtils
 import MonadUtils (MonadIO, liftIO)
+import System.Directory (makeRelativeToCurrentDirectory)
 import System.Exit (ExitCode(ExitFailure, ExitSuccess))
+import System.FilePath (takeDirectory)
 import qualified ErrUtils
 import qualified Exception (ExceptionMonad)
 import qualified GHC
 import qualified GHC.Paths
+import qualified MonadUtils as GHC
 import qualified Outputable
 
+import Cabal
 import Types (ClientDirective(..), Command(..))
 import Info (getIdentifierInfo, getType)
 
@@ -44,14 +52,15 @@ withWarnings state warningsValue action = do
     setWarnings :: Bool -> IO ()
     setWarnings val = modifyIORef state $ \s -> s { stateWarningsEnabled = val }
 
-startCommandLoop :: IORef State -> ClientSend -> IO (Maybe CommandObj) -> [String] -> Maybe Command -> IO ()
-startCommandLoop state clientSend getNextCommand initialGhcOpts mbInitial = do
+startCommandLoop :: Maybe FilePath -> IORef State -> ClientSend -> IO (Maybe CommandObj) -> [String] -> Maybe Command -> IO ()
+startCommandLoop cabal state clientSend getNextCommand initialGhcOpts mbInitial = do
+    cabalOpts <- cabalMiscOptions 
     continue <- GHC.runGhc (Just GHC.Paths.libdir) $ do
-        configOk <- GHC.gcatch (configSession state clientSend initialGhcOpts >> return True)
+        configOk <- GHC.gcatch (configSession state clientSend (cabalOpts ++ initialGhcOpts) >> return True)
             handleConfigError
         if configOk
             then do
-                doMaybe mbInitial $ \cmd -> sendErrors (runCommand state clientSend cmd)
+                doMaybe mbInitial $ \cmd -> sendErrors (runCommand cabal state clientSend cmd)
                 processNextCommand False
             else processNextCommand True
 
@@ -59,7 +68,7 @@ startCommandLoop state clientSend getNextCommand initialGhcOpts mbInitial = do
         Nothing ->
             -- Exit
             return ()
-        Just (cmd, ghcOpts) -> startCommandLoop state clientSend getNextCommand ghcOpts (Just cmd)
+        Just (cmd, ghcOpts) -> startCommandLoop cabal state clientSend getNextCommand ghcOpts (Just cmd)
     where
     processNextCommand :: Bool -> GHC.Ghc (Maybe CommandObj)
     processNextCommand forceReconfig = do
@@ -71,7 +80,7 @@ startCommandLoop state clientSend getNextCommand initialGhcOpts mbInitial = do
             Just (cmd, ghcOpts) ->
                 if forceReconfig || (ghcOpts /= initialGhcOpts)
                     then return (Just (cmd, ghcOpts))
-                    else sendErrors (runCommand state clientSend cmd) >> processNextCommand False
+                    else sendErrors (runCommand cabal state clientSend cmd) >> processNextCommand False
 
     sendErrors :: GHC.Ghc () -> GHC.Ghc ()
     sendErrors action = GHC.gcatch action (\x -> handleConfigError x >> return ())
@@ -99,10 +108,39 @@ configSession state clientSend ghcOpts = do
     (finalDynFlags, _, _) <- GHC.parseDynamicFlags updatedDynFlags (map GHC.noLoc ghcOpts)
     _ <- GHC.setSessionDynFlags finalDynFlags
     return ()
+  
 
-runCommand :: IORef State -> ClientSend -> Command -> GHC.Ghc ()
-runCommand _ clientSend (CmdCheck file) = do
+setCabalPerFileOpts :: ClientSend -> FilePath -> FilePath -> GHC.Ghc ()
+setCabalPerFileOpts send file configPath = do
+  f <- GHC.liftIO $ makeRelativeToCurrentDirectory file
+  config <- GHC.liftIO $ readFile configPath
+  case parseCabalConfig config of 
+    (ParseFailed _) -> GHC.liftIO $ send $ ClientStderr $ "Parsing of the cabal config failed. Please correct it, or use --no-cabal."
+    (ParseOk _ r) -> do
+      let srcInclude = "-i" ++ takeDirectory file
+      let opts = fromMaybe [] $ getBuildInfoOptions =<< findBuildInfoFile r f
+      dynFlags <- GHC.getSessionDynFlags
+      (finalDynFlags, _, _) <- GHC.parseDynamicFlags dynFlags (map GHC.noLoc $ srcInclude : opts)
+      _ <- GHC.setSessionDynFlags finalDynFlags
+      return ()
+
+setAllCabalImportDirs :: ClientSend -> FilePath -> GHC.Ghc ()
+setAllCabalImportDirs send cabal = do
+  config <- GHC.liftIO $ readFile cabal
+  case parseCabalConfig config of
+    (ParseFailed _) -> return ()
+    (ParseOk _ r) -> do
+      let dirs = allBuildInfo r >>= hsSourceDirs
+      GHC.liftIO $ send $ ClientStdout $ show dirs
+      dynFlags <- GHC.getSessionDynFlags
+      (finalDynFlags,_,_) <- GHC.parseDynamicFlags dynFlags (map (GHC.noLoc . ("-i" ++)) dirs)
+      _ <- GHC.setSessionDynFlags finalDynFlags
+      return ()
+
+runCommand :: Maybe FilePath -> IORef State -> ClientSend -> Command -> GHC.Ghc ()
+runCommand cabal _ clientSend (CmdCheck file) = do
     let noPhase = Nothing
+    doMaybe cabal $ setCabalPerFileOpts clientSend file
     target <- GHC.guessTarget file noPhase
     GHC.setTargets [target]
     let handler err = GHC.printException err >> return GHC.Failed
@@ -110,8 +148,13 @@ runCommand _ clientSend (CmdCheck file) = do
     liftIO $ case flag of
         GHC.Succeeded -> clientSend (ClientExit ExitSuccess)
         GHC.Failed -> clientSend (ClientExit (ExitFailure 1))
-runCommand _ clientSend (CmdModuleFile moduleName) = do
-    moduleGraph <- GHC.getModuleGraph
+runCommand cabal _ clientSend (CmdModuleFile moduleName) = do
+    doMaybe cabal $ setAllCabalImportDirs clientSend
+    target <- GHC.guessTarget moduleName Nothing
+    GHC.setTargets [target]
+    -- TODO: This currently fails, need to figure out why
+    moduleGraph <- GHC.depanal [] False `GHC.gcatch` \(SomeException _) -> return []
+    GHC.liftIO $ clientSend $ ClientStdout $ show $ map GHC.ms_location $ moduleGraph
     case find (moduleSummaryMatchesModuleName moduleName) moduleGraph of
         Nothing ->
             liftIO $ mapM_ clientSend
@@ -133,7 +176,8 @@ runCommand _ clientSend (CmdModuleFile moduleName) = do
     where
     moduleSummaryMatchesModuleName modName modSummary =
         modName == (GHC.moduleNameString . GHC.moduleName . GHC.ms_mod) modSummary
-runCommand state clientSend (CmdInfo file identifier) = do
+runCommand cabal state clientSend (CmdInfo file identifier) = do
+    doMaybe cabal $ setCabalPerFileOpts clientSend file
     result <- withWarnings state False $
         getIdentifierInfo file identifier
     case result of
@@ -146,7 +190,8 @@ runCommand state clientSend (CmdInfo file identifier) = do
             [ ClientStdout info
             , ClientExit ExitSuccess
             ]
-runCommand state clientSend (CmdType file (line, col)) = do
+runCommand cabal state clientSend (CmdType file (line, col)) = do
+    doMaybe cabal $ setCabalPerFileOpts clientSend file
     result <- withWarnings state False $
         getType file (line, col)
     case result of

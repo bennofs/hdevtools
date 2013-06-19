@@ -1,12 +1,19 @@
 module Main where
 
+import Control.Applicative ((<$>))
+import Control.Monad (filterM)
+import Data.List (isSuffixOf, find)
+import System.Directory (doesFileExist, doesDirectoryExist, getDirectoryContents, canonicalizePath)
 import System.Environment (getProgName)
+import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
+import System.Posix.Directory (changeWorkingDirectory)
+import System.FilePath (takeDirectory, takeFileName)
 
 import Client (getServerStatus, serverCommand, stopServer)
 import CommandArgs
 import Daemonize (daemonize)
-import Server (startServer, createListenSocket)
+import Server (startServer, withSocket)
 import Types (Command(..))
 
 defaultSocketFilename :: FilePath
@@ -16,24 +23,38 @@ getSocketFilename :: Maybe FilePath -> FilePath
 getSocketFilename Nothing = defaultSocketFilename
 getSocketFilename (Just f) = f
 
+findCabalConfig :: FilePath -> IO (Maybe FilePath)
+findCabalConfig d = do
+  de <- doesDirectoryExist d
+  if not de 
+     then return Nothing
+     else do
+  files <- filterM doesFileExist . map (d </>) =<< getDirectoryContents d
+  case find (".cabal" `isSuffixOf`) files of
+    Nothing -> findCabalConfig $ d </> ".."
+    (Just f) -> return (Just f)
+
 main :: IO ()
 main = do
     args <- loadHDevTools
+    cabal <- if no_cabal args then return Nothing else findCabalConfig "."
+    startDir <- canonicalizePath "."
+    case cabal of
+      Just f -> changeWorkingDirectory $ takeDirectory f
+      Nothing -> return ()
+    let cabalf = takeFileName <$> cabal
     let sock = getSocketFilename (socket args)
     case args of
-        Admin {} -> doAdmin sock args
-        Check {} -> doCheck sock args
-        ModuleFile {} -> doModuleFile sock args
-        Info {} -> doInfo sock args
-        Type {} -> doType sock args
+        Admin {} -> doAdmin cabalf sock args
+        Check {} -> doCheck startDir cabalf sock args
+        ModuleFile {} -> doModuleFile cabalf sock args
+        Info {} -> doInfo startDir cabalf sock args
+        Type {} -> doType startDir cabalf sock args
 
-doAdmin :: FilePath -> HDevTools -> IO ()
-doAdmin sock args
-    | start_server args =
-        if noDaemon args then startServer sock Nothing
-            else do
-                s <- createListenSocket sock
-                daemonize True $ startServer sock (Just s)
+doAdmin :: Maybe FilePath -> FilePath -> HDevTools -> IO ()
+doAdmin cabal sock args
+    | start_server args = 
+        (if noDaemon args then id else daemonize True) $ withSocket sock $ startServer cabal
     | status args = getServerStatus sock
     | stop_server args = stopServer sock
     | otherwise = do
@@ -41,26 +62,26 @@ doAdmin sock args
         hPutStrLn stderr "You must provide a command. See:"
         hPutStrLn stderr $ progName ++ " --help"
 
-doModuleFile :: FilePath -> HDevTools -> IO ()
-doModuleFile sock args =
-    serverCommand sock (CmdModuleFile (module_ args)) (ghcOpts args)
+doModuleFile :: Maybe FilePath -> FilePath -> HDevTools -> IO ()
+doModuleFile cabal sock args = 
+    serverCommand cabal sock (CmdModuleFile (module_ args)) (ghcOpts args)
 
-doFileCommand :: String -> (HDevTools -> Command) -> FilePath -> HDevTools -> IO ()
-doFileCommand cmdName cmd sock args
+doFileCommand :: FilePath -> Maybe FilePath -> String -> (HDevTools -> Command) -> FilePath -> HDevTools -> IO ()
+doFileCommand startDir cabal cmdName cmd sock args
     | null (file args) = do
         progName <- getProgName
         hPutStrLn stderr "You must provide a haskell source file. See:"
         hPutStrLn stderr $ progName ++ " " ++ cmdName ++ " --help"
-    | otherwise = serverCommand sock (cmd args) (ghcOpts args)
+    | otherwise = serverCommand cabal sock (cmd $ args {file = startDir </> file args}) (ghcOpts args)
 
-doCheck :: FilePath -> HDevTools -> IO ()
-doCheck = doFileCommand "check" $
+doCheck :: FilePath -> Maybe FilePath -> FilePath -> HDevTools -> IO ()
+doCheck startDir cabal = doFileCommand startDir cabal "check" $
     \args -> CmdCheck (file args)
 
-doInfo :: FilePath -> HDevTools -> IO ()
-doInfo = doFileCommand "info" $
+doInfo :: FilePath -> Maybe FilePath -> FilePath -> HDevTools -> IO ()
+doInfo startDir cabal = doFileCommand startDir cabal "info" $
     \args -> CmdInfo (file args) (identifier args)
 
-doType :: FilePath -> HDevTools -> IO ()
-doType = doFileCommand "type" $
+doType :: FilePath -> Maybe FilePath -> FilePath -> HDevTools -> IO ()
+doType startDir cabal = doFileCommand startDir cabal "type" $
     \args -> CmdType (file args) (line args, col args)

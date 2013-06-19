@@ -2,10 +2,11 @@ module Server where
 
 import Control.Exception (bracket, finally, handleJust, tryJust)
 import Control.Monad (guard)
+import Control.Monad.IfElse (whenM)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import GHC.IO.Exception (IOErrorType(ResourceVanished))
 import Network (PortID(UnixSocket), Socket, accept, listenOn, sClose)
-import System.Directory (removeFile)
+import System.Directory (removeFile, doesFileExist)
 import System.Exit (ExitCode(ExitSuccess))
 import System.IO (Handle, hClose, hFlush, hGetLine, hPutStrLn)
 import System.IO.Error (ioeGetErrorType, isDoesNotExistError)
@@ -14,32 +15,24 @@ import CommandLoop (newCommandLoopState, startCommandLoop)
 import Types (ClientDirective(..), Command, ServerDirective(..))
 import Util (readMaybe)
 
+withSocket :: FilePath -> (Socket -> IO a) -> IO a
+withSocket sock = bracket (createListenSocket sock) (cleanupSocket sock)
+
+cleanupSocket :: FilePath -> Socket -> IO ()
+cleanupSocket sockFile sock = do
+  sClose sock
+  whenM (doesFileExist sockFile) $ removeFile sockFile
+
+
 createListenSocket :: FilePath -> IO Socket
 createListenSocket socketPath =
     listenOn (UnixSocket socketPath)
 
-startServer :: FilePath -> Maybe Socket -> IO ()
-startServer socketPath mbSock = do
-    case mbSock of
-        Nothing -> bracket (createListenSocket socketPath) cleanup go
-        Just sock -> (go sock) `finally` (cleanup sock)
-    where
-    cleanup :: Socket -> IO ()
-    cleanup sock = do
-        sClose sock
-        removeSocketFile
-
-    go :: Socket -> IO ()
-    go sock = do
-        state <- newCommandLoopState
-        currentClient <- newIORef Nothing
-        startCommandLoop state (clientSend currentClient) (getNextCommand currentClient sock) [] Nothing
-
-    removeSocketFile :: IO ()
-    removeSocketFile = do
-        -- Ignore possible error if socket file does not exist
-        _ <- tryJust (guard . isDoesNotExistError) $ removeFile socketPath
-        return ()
+startServer :: Maybe FilePath -> Socket -> IO ()
+startServer cabal sock = do
+  state <- newCommandLoopState
+  currentClient <- newIORef Nothing
+  startCommandLoop cabal state (clientSend currentClient) (getNextCommand currentClient sock) [] Nothing
 
 clientSend :: IORef (Maybe Handle) -> ClientDirective -> IO ()
 clientSend currentClient clientDirective = do

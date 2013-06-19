@@ -65,4 +65,7 @@ executable hdevtools
                        syb,
                        network,
                        time,
-                       unix
+                       unix,
+                       Cabal,
+                       IfElse,
+                       filepath

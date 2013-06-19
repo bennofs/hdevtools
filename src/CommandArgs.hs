@@ -38,22 +38,26 @@ data HDevTools
         , noDaemon :: Bool
         , status :: Bool
         , stop_server :: Bool
+        , no_cabal :: Bool
         }
     | Check
         { socket :: Maybe FilePath
         , ghcOpts :: [String]
         , file :: String
+        , no_cabal :: Bool
         }
     | ModuleFile
         { socket :: Maybe FilePath
         , ghcOpts :: [String]
         , module_ :: String
+        , no_cabal :: Bool
         }
     | Info
         { socket :: Maybe FilePath
         , ghcOpts :: [String]
         , file :: String
         , identifier :: String
+        , no_cabal :: Bool
         }
     | Type
         { socket :: Maybe FilePath
@@ -61,6 +65,7 @@ data HDevTools
         , file :: String
         , line :: Int
         , col :: Int
+        , no_cabal :: Bool
         }
     deriving (Show, Data, Typeable)
 
@@ -71,6 +76,7 @@ dummyAdmin = Admin
     , noDaemon = False
     , status = False
     , stop_server = False
+    , no_cabal = False
     }
 
 dummyCheck :: HDevTools
@@ -78,6 +84,7 @@ dummyCheck = Check
     { socket = Nothing
     , ghcOpts = []
     , file = ""
+    , no_cabal = False
     }
 
 dummyModuleFile :: HDevTools
@@ -85,6 +92,7 @@ dummyModuleFile = ModuleFile
     { socket = Nothing
     , ghcOpts = []
     , module_ = ""
+    , no_cabal = False
     }
 
 dummyInfo :: HDevTools
@@ -93,6 +101,7 @@ dummyInfo = Info
     , ghcOpts = []
     , file = ""
     , identifier = ""
+    , no_cabal = False
     }
 
 dummyType :: HDevTools
@@ -102,6 +111,7 @@ dummyType = Type
     , file = ""
     , line = 0
     , col = 0
+    , no_cabal = False
     }
 
 admin :: Annotate Ann
@@ -111,6 +121,7 @@ admin = record dummyAdmin
     , noDaemon := def            += help "do not daemonize (only if --start-server)"
     , status   := def            += help "show status of server"
     , stop_server := def         += help "shutdown the server"
+    , no_cabal := def            += help "don't search for a cabal file and behave like there wasn't any cabal file"
     ] += help "Interactions with the server"
 
 check :: Annotate Ann
