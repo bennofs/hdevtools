@@ -1,23 +1,23 @@
 {-# LANGUAGE MonadComprehensions #-}
 module Cabal where
 
-import Control.Applicative((<|>), (<$), Applicative, Alternative, pure, empty, (<$>))
-import Control.Monad (guard, (>=>))
-import Control.Monad.IfElse
-import Config (cProjectVersion)
-import Data.List (find, intercalate, isPrefixOf)
-import Data.Maybe (listToMaybe)
-import Data.Version (Version, parseVersion)
-import Distribution.Compiler (CompilerId(..), CompilerFlavor(..))
-import qualified Distribution.ModuleName as MN
-import Distribution.Package (Dependency(..))
-import Distribution.PackageDescription (PackageDescription(..), FlagAssignment, BuildInfo, library, libModules, libBuildInfo, exeModules, buildInfo, testBuildInfo, testModules, testSuites, options, hsSourceDirs, defaultExtensions, targetBuildDepends, allBuildInfo, hsSourceDirs)
-import Distribution.PackageDescription.Parse (parsePackageDescription, ParseResult)
-import Distribution.PackageDescription.Configuration (finalizePackageDescription)
-import Distribution.System (buildPlatform)
-import qualified Distribution.Text as CT
-import System.Directory
-import Text.ParserCombinators.ReadP (readP_to_S)
+import           Config                                        (cProjectVersion)
+import           Control.Applicative
+import           Control.Monad                                 (guard, (>=>))
+import           Control.Monad.IfElse
+import           Data.List
+import           Data.Maybe                                    (listToMaybe)
+import           Data.Version
+import           Distribution.Compiler
+import qualified Distribution.ModuleName                       as MN
+import           Distribution.Package                          (Dependency (..))
+import           Distribution.PackageDescription
+import           Distribution.PackageDescription.Configuration (finalizePackageDescription)
+import           Distribution.PackageDescription.Parse         (ParseResult, parsePackageDescription)
+import           Distribution.System                           (buildPlatform)
+import qualified Distribution.Text                             as CT
+import           System.Directory
+import           Text.ParserCombinators.ReadP                  (readP_to_S)
 
 ghcVersion :: Version
 ghcVersion = fst $ head $ filter (null . snd) $ readP_to_S parseVersion cProjectVersion
@@ -48,10 +48,10 @@ ifM :: (Functor m, Alternative f) => m Bool -> f a -> m (f a)
 ifM w v = if' empty v <$> w
 
 cabalMiscOptions :: IO [String]
-cabalMiscOptions = 
-  fmap concat $ sequence $
+cabalMiscOptions =
+  fmap concat $ sequence
   [ pureIfM (doesFileExist localDB) $ "-package-db " ++ localDB
-  , ifM (doesFileExist macros) $ ["-optP-include", "-optP" ++ macros]
+  , ifM (doesFileExist macros) ["-optP-include", "-optP" ++ macros]
   ]
   where localDB = "dist/package.conf.inplace"
         macros = "dist/build/autogen/cabal_macros.h"
@@ -60,7 +60,7 @@ getBuildInfoOptions :: BuildInfo -> Maybe [String]
 getBuildInfoOptions bi = do
   o <- listToMaybe $ map snd $ filter ((== GHC) . fst) $ options bi
   let o' = map ("-i" ++) $ hsSourceDirs bi
-  let o'' = map ("-X" ++) $ map CT.display $ defaultExtensions bi
+  let o'' = map (("-X" ++) . CT.display) $ defaultExtensions bi
   let deps = targetBuildDepends bi
       o''' = map (("-package " ++) . CT.display . pkgName) deps
   return $ o' ++ o'' ++ o ++ o''' ++ ["-hide-all-packages"]

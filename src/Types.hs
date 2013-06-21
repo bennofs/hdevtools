@@ -4,7 +4,7 @@ module Types
     , Command(..)
     ) where
 
-import System.Exit (ExitCode)
+import           System.Exit (ExitCode)
 
 data ServerDirective
     = SrvCommand Command [String]
@@ -19,9 +19,11 @@ data ClientDirective
     | ClientUnexpectedError String -- ^ For unexpected errors that should not happen
     deriving (Read, Show)
 
+
+-- | Commands taking a file take the "real" file path (as it was given on the commandline) and the absolute file path.
 data Command
-    = CmdCheck FilePath
+    = CmdCheck FilePath FilePath
     | CmdModuleFile String
-    | CmdInfo FilePath String
-    | CmdType FilePath (Int, Int)
+    | CmdInfo FilePath FilePath String
+    | CmdType FilePath FilePath (Int, Int)
     deriving (Read, Show)

@@ -1,19 +1,19 @@
+{-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE CPP #-}
 module CommandArgs
     ( HDevTools(..)
     , loadHDevTools
     )
 where
 
-import System.Console.CmdArgs.Implicit
-import System.Environment (getProgName)
-import System.Info (arch, os)
 import qualified Config
+import           System.Console.CmdArgs.Implicit
+import           System.Environment              (getProgName)
+import           System.Info                     (arch, os)
 
 #ifdef CABAL
-import Data.Version (showVersion)
-import Paths_hdevtools (version)
+import           Data.Version                    (showVersion)
+import           Paths_hdevtools                 (version)
 #endif
 
 programVersion :: String
@@ -33,38 +33,38 @@ fullVersion =
 
 data HDevTools
     = Admin
-        { socket :: Maybe FilePath
+        { socket       :: Maybe FilePath
         , start_server :: Bool
-        , noDaemon :: Bool
-        , status :: Bool
-        , stop_server :: Bool
-        , no_cabal :: Bool
+        , noDaemon     :: Bool
+        , status       :: Bool
+        , stop_server  :: Bool
+        , no_cabal     :: Bool
         }
     | Check
-        { socket :: Maybe FilePath
-        , ghcOpts :: [String]
-        , file :: String
+        { socket   :: Maybe FilePath
+        , ghcOpts  :: [String]
+        , file     :: String
         , no_cabal :: Bool
         }
     | ModuleFile
-        { socket :: Maybe FilePath
-        , ghcOpts :: [String]
-        , module_ :: String
+        { socket   :: Maybe FilePath
+        , ghcOpts  :: [String]
+        , module_  :: String
         , no_cabal :: Bool
         }
     | Info
-        { socket :: Maybe FilePath
-        , ghcOpts :: [String]
-        , file :: String
+        { socket     :: Maybe FilePath
+        , ghcOpts    :: [String]
+        , file       :: String
         , identifier :: String
-        , no_cabal :: Bool
+        , no_cabal   :: Bool
         }
     | Type
-        { socket :: Maybe FilePath
-        , ghcOpts :: [String]
-        , file :: String
-        , line :: Int
-        , col :: Int
+        { socket   :: Maybe FilePath
+        , ghcOpts  :: [String]
+        , file     :: String
+        , line     :: Int
+        , col      :: Int
         , no_cabal :: Bool
         }
     deriving (Show, Data, Typeable)
@@ -165,4 +165,4 @@ full progName = modes_ [admin += auto, check, moduleFile, info, type_]
 loadHDevTools :: IO HDevTools
 loadHDevTools = do
     progName <- getProgName
-    (cmdArgs_ (full progName) :: IO HDevTools)
+    cmdArgs_ (full progName) :: IO HDevTools

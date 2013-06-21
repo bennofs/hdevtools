@@ -1,19 +1,22 @@
 module Server where
 
-import Control.Exception (bracket, finally, handleJust, tryJust)
-import Control.Monad (guard)
-import Control.Monad.IfElse (whenM)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import GHC.IO.Exception (IOErrorType(ResourceVanished))
-import Network (PortID(UnixSocket), Socket, accept, listenOn, sClose)
-import System.Directory (removeFile, doesFileExist)
-import System.Exit (ExitCode(ExitSuccess))
-import System.IO (Handle, hClose, hFlush, hGetLine, hPutStrLn)
-import System.IO.Error (ioeGetErrorType, isDoesNotExistError)
+import           Control.Exception    (bracket, finally, handleJust, tryJust)
+import           Control.Monad        (guard)
+import           Control.Monad.IfElse (whenM)
+import           Data.IORef           (IORef, newIORef, readIORef, writeIORef)
+import           GHC.IO.Exception     (IOErrorType (ResourceVanished))
+import           Network              (PortID (UnixSocket), Socket, accept,
+                                       listenOn, sClose)
+import           System.Directory     (doesFileExist, removeFile)
+import           System.Exit          (ExitCode (ExitSuccess))
+import           System.IO            (Handle, hClose, hFlush, hGetLine,
+                                       hPutStrLn)
+import           System.IO.Error      (ioeGetErrorType, isDoesNotExistError)
 
-import CommandLoop (newCommandLoopState, startCommandLoop)
-import Types (ClientDirective(..), Command, ServerDirective(..))
-import Util (readMaybe)
+import           CommandLoop          (newCommandLoopState, startCommandLoop)
+import           Types                (ClientDirective (..), Command,
+                                       ServerDirective (..))
+import           Util                 (readMaybe)
 
 withSocket :: FilePath -> (Socket -> IO a) -> IO a
 withSocket sock = bracket (createListenSocket sock) (cleanupSocket sock)
@@ -39,7 +42,7 @@ clientSend currentClient clientDirective = do
     mbH <- readIORef currentClient
     case mbH of
         Just h -> ignoreEPipe $ do
-            hPutStrLn h (show clientDirective)
+            hPrint h (show clientDirective)
             hFlush h
         Nothing -> error "This is impossible"
     where
@@ -62,16 +65,15 @@ getNextCommand currentClient sock = do
             clientSend currentClient $ ClientUnexpectedError $
                 "The client sent an invalid message to the server: " ++ show msg
             getNextCommand currentClient sock
-        Just (SrvCommand cmd ghcOpts) -> do
-            return $ Just (cmd, ghcOpts)
+        Just (SrvCommand cmd ghcOpts) -> return $ Just (cmd, ghcOpts)
         Just SrvStatus -> do
-            mapM_ (clientSend currentClient) $
+            mapM_ (clientSend currentClient)
                 [ ClientStdout "Server is running."
                 , ClientExit ExitSuccess
                 ]
             getNextCommand currentClient sock
         Just SrvExit -> do
-            mapM_ (clientSend currentClient) $
+            mapM_ (clientSend currentClient)
                 [ ClientStdout "Shutting down server."
                 , ClientExit ExitSuccess
                 ]

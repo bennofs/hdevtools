@@ -1,20 +1,21 @@
 module Main where
 
-import Control.Applicative ((<$>))
-import Control.Monad (filterM)
-import Data.List (isSuffixOf, find)
-import System.Directory (doesFileExist, doesDirectoryExist, getDirectoryContents, canonicalizePath)
-import System.Environment (getProgName)
-import System.FilePath ((</>))
-import System.IO (hPutStrLn, stderr)
-import System.Posix.Directory (changeWorkingDirectory)
-import System.FilePath (takeDirectory, takeFileName)
+import           Control.Applicative    ((<$>))
+import           Control.Monad          (filterM)
+import           Data.List              (find, isSuffixOf)
+import           System.Directory       (canonicalizePath, doesDirectoryExist,
+                                         doesFileExist, getDirectoryContents)
+import           System.Environment     (getProgName)
+import           System.FilePath        (takeDirectory, takeFileName, (</>))
+import           System.IO              (hPutStrLn, stderr)
+import           System.Posix.Directory (changeWorkingDirectory)
 
-import Client (getServerStatus, serverCommand, stopServer)
-import CommandArgs
-import Daemonize (daemonize)
-import Server (startServer, withSocket)
-import Types (Command(..))
+import           Client                 (getServerStatus, serverCommand,
+                                         stopServer)
+import           CommandArgs
+import           Daemonize              (daemonize)
+import           Server                 (startServer, withSocket)
+import           Types                  (Command (..))
 
 defaultSocketFilename :: FilePath
 defaultSocketFilename = ".hdevtools.sock"
@@ -26,7 +27,7 @@ getSocketFilename (Just f) = f
 findCabalConfig :: FilePath -> IO (Maybe FilePath)
 findCabalConfig d = do
   de <- doesDirectoryExist d
-  if not de 
+  if not de
      then return Nothing
      else do
   files <- filterM doesFileExist . map (d </>) =<< getDirectoryContents d
@@ -53,7 +54,7 @@ main = do
 
 doAdmin :: Maybe FilePath -> FilePath -> HDevTools -> IO ()
 doAdmin cabal sock args
-    | start_server args = 
+    | start_server args =
         (if noDaemon args then id else daemonize True) $ withSocket sock $ startServer cabal
     | status args = getServerStatus sock
     | stop_server args = stopServer sock
@@ -63,25 +64,25 @@ doAdmin cabal sock args
         hPutStrLn stderr $ progName ++ " --help"
 
 doModuleFile :: Maybe FilePath -> FilePath -> HDevTools -> IO ()
-doModuleFile cabal sock args = 
+doModuleFile cabal sock args =
     serverCommand cabal sock (CmdModuleFile (module_ args)) (ghcOpts args)
 
-doFileCommand :: FilePath -> Maybe FilePath -> String -> (HDevTools -> Command) -> FilePath -> HDevTools -> IO ()
+doFileCommand :: FilePath -> Maybe FilePath -> String -> (FilePath -> HDevTools -> Command) -> FilePath -> HDevTools -> IO ()
 doFileCommand startDir cabal cmdName cmd sock args
     | null (file args) = do
         progName <- getProgName
         hPutStrLn stderr "You must provide a haskell source file. See:"
         hPutStrLn stderr $ progName ++ " " ++ cmdName ++ " --help"
-    | otherwise = serverCommand cabal sock (cmd $ args {file = startDir </> file args}) (ghcOpts args)
+    | otherwise = serverCommand cabal sock (cmd (file args) $ args {file = startDir </> file args}) (ghcOpts args)
 
 doCheck :: FilePath -> Maybe FilePath -> FilePath -> HDevTools -> IO ()
 doCheck startDir cabal = doFileCommand startDir cabal "check" $
-    \args -> CmdCheck (file args)
+    \real args -> CmdCheck real (file args)
 
 doInfo :: FilePath -> Maybe FilePath -> FilePath -> HDevTools -> IO ()
 doInfo startDir cabal = doFileCommand startDir cabal "info" $
-    \args -> CmdInfo (file args) (identifier args)
+    \real args -> CmdInfo real (file args) (identifier args)
 
 doType :: FilePath -> Maybe FilePath -> FilePath -> HDevTools -> IO ()
 doType startDir cabal = doFileCommand startDir cabal "type" $
-    \args -> CmdType (file args) (line args, col args)
+    \real args -> CmdType real (file args) (line args, col args)

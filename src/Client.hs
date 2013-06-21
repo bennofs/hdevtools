@@ -4,33 +4,34 @@ module Client
     , serverCommand
     ) where
 
-import Control.Exception (tryJust)
-import Control.Monad (guard)
-import Network (PortID(UnixSocket), connectTo)
-import System.Exit (exitFailure, exitWith)
-import System.IO (Handle, hClose, hFlush, hGetLine, hPutStrLn, stderr)
-import System.IO.Error (isDoesNotExistError)
+import           Control.Exception (tryJust)
+import           Control.Monad     (guard)
+import           Network           (PortID (UnixSocket), connectTo)
+import           System.Exit       (exitFailure, exitWith)
+import           System.IO         (Handle, hClose, hFlush, hGetLine, hPrint,
+                                    hPutStrLn, stderr)
+import           System.IO.Error   (isDoesNotExistError)
 
-import Daemonize (daemonize)
-import Server (createListenSocket, startServer, withSocket)
-import Types (ClientDirective(..), Command(..), ServerDirective(..))
-import Util (readMaybe)
+import           Daemonize         (daemonize)
+import           Server            (startServer, withSocket)
+import           Types             (ClientDirective (..), Command (..),
+                                    ServerDirective (..))
+import           Util              (readMaybe)
 
 connect :: FilePath -> IO Handle
-connect sock = do
-    connectTo "" (UnixSocket sock)
+connect = connectTo "" . UnixSocket
 
 getServerStatus :: FilePath -> IO ()
 getServerStatus sock = do
     h <- connect sock
-    hPutStrLn h $ show SrvStatus
+    hPrint h SrvStatus
     hFlush h
     startClientReadLoop h
 
 stopServer :: FilePath -> IO ()
 stopServer sock = do
     h <- connect sock
-    hPutStrLn h $ show SrvExit
+    hPrint h SrvExit
     hFlush h
     startClientReadLoop h
 
@@ -39,7 +40,7 @@ serverCommand cabal sock cmd ghcOpts = do
     r <- tryJust (guard . isDoesNotExistError) (connect sock)
     case r of
         Right h -> do
-            hPutStrLn h $ show (SrvCommand cmd ghcOpts)
+            hPrint h $ SrvCommand cmd ghcOpts
             hFlush h
             startClientReadLoop h
         Left _ -> do
@@ -51,8 +52,8 @@ startClientReadLoop h = do
     msg <- hGetLine h
     let clientDirective = readMaybe msg
     case clientDirective of
-        Just (ClientStdout out) -> putStrLn out >> putStrLn >> startClientReadLoop h
-        Just (ClientStderr err) -> hPutStrLn stderr err >> startClientReadLoop h
+        Just (ClientStdout out) -> putStrLn out >> putStrLn "" >> startClientReadLoop h
+        Just (ClientStderr err) -> hPutStrLn stderr err >> putStrLn "" >> startClientReadLoop h
         Just (ClientExit exitCode) -> hClose h >> exitWith exitCode
         Just (ClientUnexpectedError err) -> hClose h >> unexpectedError err
         Nothing -> do
