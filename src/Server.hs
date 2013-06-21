@@ -1,6 +1,7 @@
 module Server where
 
-import           Control.Exception    (bracket, finally, handleJust, tryJust)
+import           CommandLoop          (newCommandLoopState, startCommandLoop)
+import           Control.Exception    (bracket, handleJust)
 import           Control.Monad        (guard)
 import           Control.Monad.IfElse (whenM)
 import           Data.IORef           (IORef, newIORef, readIORef, writeIORef)
@@ -9,11 +10,8 @@ import           Network              (PortID (UnixSocket), Socket, accept,
                                        listenOn, sClose)
 import           System.Directory     (doesFileExist, removeFile)
 import           System.Exit          (ExitCode (ExitSuccess))
-import           System.IO            (Handle, hClose, hFlush, hGetLine,
-                                       hPutStrLn)
-import           System.IO.Error      (ioeGetErrorType, isDoesNotExistError)
-
-import           CommandLoop          (newCommandLoopState, startCommandLoop)
+import           System.IO            (Handle, hClose, hFlush, hGetLine, hPrint)
+import           System.IO.Error      (ioeGetErrorType)
 import           Types                (ClientDirective (..), Command,
                                        ServerDirective (..))
 import           Util                 (readMaybe)

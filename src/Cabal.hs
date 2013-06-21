@@ -3,8 +3,7 @@ module Cabal where
 
 import           Config                                        (cProjectVersion)
 import           Control.Applicative
-import           Control.Monad                                 (guard, (>=>))
-import           Control.Monad.IfElse
+import           Control.Monad                                 (guard)
 import           Data.List
 import           Data.Maybe                                    (listToMaybe)
 import           Data.Version
@@ -24,7 +23,7 @@ ghcVersion = fst $ head $ filter (null . snd) $ readP_to_S parseVersion cProject
 
 parseCabalConfig :: String -> ParseResult PackageDescription
 parseCabalConfig contents = v >>= \v' -> case v' of
-    (Left d) -> error "This is a bug in parseCabalConfig" -- We said all packages are available, so this should definitely not happen
+    (Left _) -> error "This is a bug in parseCabalConfig" -- We said all packages are available, so this should definitely not happen
     (Right r) -> return $ fst r
   where v = return . finalizePackageDescription [] (const True) buildPlatform (CompilerId GHC ghcVersion) [] =<< parsePackageDescription contents
 
@@ -32,9 +31,9 @@ findBuildInfoFile :: PackageDescription -> String -> Maybe BuildInfo
 findBuildInfoFile d f = listToMaybe $ filter (any (`isPrefixOf` f) . hsSourceDirs) $ allBuildInfo d
 
 findBuildInfoModule :: PackageDescription -> String -> Maybe BuildInfo
-findBuildInfoModule d m = findLibrary <|> findExecutable <|> findTestSuite
+findBuildInfoModule d m = findLibrary <|> findExe <|> findTestSuite
   where findLibrary = library d >>= \x -> libBuildInfo x <$ guard (MN.fromString m `elem` libModules x)
-        findExecutable = fmap buildInfo $ listToMaybe $ filter ((MN.fromString m `elem`) . exeModules) $ executables d
+        findExe = fmap buildInfo $ listToMaybe $ filter ((MN.fromString m `elem`) . exeModules) $ executables d
         findTestSuite = fmap testBuildInfo $ listToMaybe $ filter ((MN.fromString m `elem`) . testModules) $ testSuites d
 
 if' :: a -> a -> Bool -> a
