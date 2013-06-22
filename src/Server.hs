@@ -40,7 +40,7 @@ clientSend currentClient clientDirective = do
     mbH <- readIORef currentClient
     case mbH of
         Just h -> ignoreEPipe $ do
-            hPrint h (show clientDirective)
+            hPrint h clientDirective
             hFlush h
         Nothing -> error "This is impossible"
     where

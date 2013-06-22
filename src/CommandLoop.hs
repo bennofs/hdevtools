@@ -131,14 +131,13 @@ setCabalPerFileOpts send file configPath = do
       _ <- GHC.setSessionDynFlags finalDynFlags
       return ()
 
-setAllCabalImportDirs :: ClientSend -> FilePath -> GHC.Ghc ()
-setAllCabalImportDirs send cabal = do
+setAllCabalImportDirs :: FilePath -> GHC.Ghc ()
+setAllCabalImportDirs cabal = do
   config <- GHC.liftIO $ readFile cabal
   case parseCabalConfig config of
     (ParseFailed _) -> return ()
     (ParseOk _ r) -> do
       let dirs = allBuildInfo r >>= hsSourceDirs
-      GHC.liftIO $ send $ ClientStdout $ show dirs
       dynFlags <- GHC.getSessionDynFlags
       (finalDynFlags,_,_) <- GHC.parseDynamicFlags dynFlags (map (GHC.noLoc . ("-i" ++)) dirs)
       _ <- GHC.setSessionDynFlags finalDynFlags
@@ -164,7 +163,7 @@ runCommand cabal state clientSend (CmdCheck real file) = do
         GHC.Succeeded -> clientSend (ClientExit ExitSuccess)
         GHC.Failed -> clientSend (ClientExit (ExitFailure 1))
 runCommand cabal _ clientSend (CmdModuleFile moduleName) = do
-    doMaybe cabal $ setAllCabalImportDirs clientSend
+    doMaybe cabal setAllCabalImportDirs
     target <- GHC.guessTarget moduleName Nothing
     GHC.setTargets [target]
     -- TODO: This currently fails, need to figure out why (when cabal support enabled)

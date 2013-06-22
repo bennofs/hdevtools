@@ -27,6 +27,11 @@ getSocketFilename (Just f) = f
 findCabalConfig :: FilePath -> IO (Maybe FilePath)
 findCabalConfig d = do
   de <- doesDirectoryExist d
+  d' <- canonicalizePath d
+  d'' <- canonicalizePath (d </> "..")
+  if d' == d''
+    then return Nothing
+    else do
   if not de
      then return Nothing
      else do
