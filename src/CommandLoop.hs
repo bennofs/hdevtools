@@ -24,6 +24,8 @@ import qualified SrcLoc                          as GHC
 import           System.Directory                (makeRelativeToCurrentDirectory)
 import           System.Exit                     (ExitCode (ExitFailure, ExitSuccess))
 import           System.FilePath                 (takeDirectory)
+import           System.Posix.Files
+import           System.Posix.Types
 
 import           Cabal
 import           Info                            (getIdentifierInfo, getType)
@@ -38,6 +40,7 @@ data State = State
     { stateWarningsEnabled :: Bool
     , currentFileReal      :: GHC.FastString
     , currentFilePath      :: GHC.FastString
+    , cabalFileMod         :: EpochTime
     }
 
 newCommandLoopState :: IO (IORef State)
@@ -46,6 +49,7 @@ newCommandLoopState =
         { stateWarningsEnabled = True
         , currentFileReal = GHC.fsLit ""
         , currentFilePath = GHC.fsLit ""
+        , cabalFileMod = 0
         }
 
 withWarnings :: (MonadIO m, Exception.ExceptionMonad m) => IORef State -> Bool -> m a -> m a
@@ -117,8 +121,17 @@ configSession state clientSend ghcOpts = do
     return ()
 
 
-setCabalPerFileOpts :: ClientSend -> FilePath -> FilePath -> GHC.Ghc ()
-setCabalPerFileOpts send file configPath = do
+cabalCached :: (GHC.MonadIO m, Functor m) => IORef State -> FilePath -> m () -> m ()
+cabalCached state file act = do
+  s <- GHC.liftIO $ getSymbolicLinkStatus file
+  told <- fmap cabalFileMod $ GHC.liftIO $ readIORef state
+  when (told < modificationTime s) $ do
+    GHC.liftIO $ modifyIORef state $ \x -> x { cabalFileMod = (modificationTime s)}
+    act
+
+setCabalPerFileOpts :: ClientSend -> IORef State -> FilePath -> FilePath -> GHC.Ghc ()
+setCabalPerFileOpts send state file configPath = cabalCached state configPath $ do
+  GHC.liftIO $ send $ ClientLog $ "Loading cabal"
   f <- GHC.liftIO $ makeRelativeToCurrentDirectory file
   config <- GHC.liftIO $ readFile configPath
   case parseCabalConfig config of
@@ -152,13 +165,19 @@ setCurrentFile state real path =
 
 runCommand :: Maybe FilePath -> IORef State -> ClientSend -> Command -> GHC.Ghc ()
 runCommand cabal state clientSend (CmdCheck real file) = do
+    let log = GHC.liftIO . clientSend . ClientLog
+    log $ "[Check] Initalize state"
     setCurrentFile state real file
+    log $ "[Check] Load cabal"
     let noPhase = Nothing
-    doMaybe cabal $ setCabalPerFileOpts clientSend file
+    doMaybe cabal $ setCabalPerFileOpts clientSend state file
+    log $ "[Check] Load target"
     target <- GHC.guessTarget file noPhase
     GHC.setTargets [target]
     let handler err = GHC.printException err >> return GHC.Failed
+    log $ "[Check] Compile target"
     flag <- GHC.handleSourceError handler (GHC.load GHC.LoadAllTargets)
+    log $ "[Check] Send result"
     liftIO $ case flag of
         GHC.Succeeded -> clientSend (ClientExit ExitSuccess)
         GHC.Failed -> clientSend (ClientExit (ExitFailure 1))
@@ -191,7 +210,7 @@ runCommand cabal _ clientSend (CmdModuleFile moduleName) = do
         modName == (GHC.moduleNameString . GHC.moduleName . GHC.ms_mod) modSummary
 runCommand cabal state clientSend (CmdInfo real file identifier) = do
     setCurrentFile state real file
-    doMaybe cabal $ setCabalPerFileOpts clientSend file
+    doMaybe cabal $ setCabalPerFileOpts clientSend state file
     result <- withWarnings state False $
         getIdentifierInfo file identifier
     case result of
@@ -206,7 +225,7 @@ runCommand cabal state clientSend (CmdInfo real file identifier) = do
             ]
 runCommand cabal state clientSend (CmdType real file (line, col)) = do
     setCurrentFile state real file
-    doMaybe cabal $ setCabalPerFileOpts clientSend file
+    doMaybe cabal $ setCabalPerFileOpts clientSend state file
     result <- withWarnings state False $
         getType file (line, col)
     case result of
@@ -233,7 +252,7 @@ modifySrcSpan :: GHC.FastString -> GHC.FastString -> GHC.SrcSpan -> GHC.SrcSpan
 modifySrcSpan _ _ srcspan@(GHC.UnhelpfulSpan _) = srcspan
 modifySrcSpan real path (GHC.RealSrcSpan srcspan)
   | GHC.srcSpanFile srcspan == path = GHC.RealSrcSpan $ GHC.mkRealSrcSpan (GHC.mkRealSrcLoc real lineStart colStart) (GHC.mkRealSrcLoc real lineEnd colEnd)
-  | otherwise = GHC.RealSrcSpan srcspan
+  | otherwise = GHC.RealSrcSpan $ GHC.mkRealSrcSpan (GHC.mkRealSrcLoc real 1 1) (GHC.mkRealSrcLoc real 1 1)
   where colStart = GHC.srcSpanStartCol srcspan
         colEnd = GHC.srcSpanEndCol srcspan
         lineStart = GHC.srcSpanStartLine srcspan
@@ -245,7 +264,10 @@ logAction state clientSend dflags severity srcspan style msg = do
     s <- readIORef state
     let out = Outputable.renderWithStyle dflags fullMsg style
         _ = severity
-        fullMsg = ErrUtils.mkLocMessage severity (modifySrcSpan (currentFileReal s) (currentFilePath s) srcspan) msg
+        fullMsg = ErrUtils.mkLocMessage severity (modifySrcSpan (currentFileReal s) (currentFilePath s) srcspan) msg'
+        msg'
+          | maybe False (== currentFilePath s) (GHC.srcSpanFileName_maybe srcspan) = msg
+          | otherwise = maybe (Outputable.text "") Outputable.ftext (GHC.srcSpanFileName_maybe srcspan) Outputable.<> Outputable.text ":" Outputable.<+> msg
     logActionSend s clientSend severity out
 #else
 logAction :: FilePath -> FilePath -> IORef State -> ClientSend -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.Message -> IO ()

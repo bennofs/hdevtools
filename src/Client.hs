@@ -54,6 +54,7 @@ startClientReadLoop h = do
     case clientDirective of
         Just (ClientStdout out) -> putStrLn out >> putStrLn "" >> startClientReadLoop h
         Just (ClientStderr err) -> hPutStrLn stderr err >> putStrLn "" >> startClientReadLoop h
+        Just (ClientLog l) -> startClientReadLoop h -- Logging disabled: TODO: Make configurable
         Just (ClientExit exitCode) -> hClose h >> exitWith exitCode
         Just (ClientUnexpectedError err) -> hClose h >> unexpectedError err
         Nothing -> do

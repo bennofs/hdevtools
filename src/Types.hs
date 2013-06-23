@@ -15,6 +15,7 @@ data ServerDirective
 data ClientDirective
     = ClientStdout String
     | ClientStderr String
+    | ClientLog String
     | ClientExit ExitCode
     | ClientUnexpectedError String -- ^ For unexpected errors that should not happen
     deriving (Read, Show)
