@@ -68,4 +68,8 @@ executable hdevtools
                        unix,
                        Cabal,
                        IfElse,
-                       filepath
+                       filepath,
+                       lens,
+                       pipes,
+                       mtl,
+                       pipes-concurrency

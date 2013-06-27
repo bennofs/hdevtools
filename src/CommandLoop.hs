@@ -1,12 +1,31 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP                   #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RankNTypes            #-}
+{-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE UndecidableInstances  #-}
+{-# OPTIONS_GHC -fno-warn-orphans  #-}
 module CommandLoop
     ( newCommandLoopState
     , startCommandLoop
+    , setupCommandLoop
     ) where
 
 import           Control.Applicative             ((<$>))
+import           Control.Concurrent
 import           Control.Exception               (SomeException (..))
-import           Control.Monad                   (void, when)
+import           Control.Lens
+import           Control.Monad
+import           Control.Monad.Reader.Class
+import           Control.Monad.State.Class
+import           Control.Proxy
+import           Control.Proxy.Concurrent
+import           Control.Proxy.Trans.Reader      hiding (ask, asks, local)
+import qualified Control.Proxy.Trans.Reader      as ReaderP
+import           Control.Proxy.Trans.State       hiding (get, gets, modify, put,
+                                                  state, stateT)
+import qualified Control.Proxy.Trans.State       as StateP
 import           Data.IORef
 import           Data.List                       (find)
 import           Data.Maybe
@@ -29,12 +48,51 @@ import           System.Posix.Types
 
 import           Cabal
 import           Info                            (getIdentifierInfo, getType)
-import           Types                           (ClientDirective (..),
-                                                  Command (..))
+import           Types
+
+-- Orphan
+instance (Proxy p, Monad m) => MonadState s (StateP s p a' a b' b m) where
+  get = StateP.get
+  put = StateP.put
+  state = StateP.state
+
+instance (Proxy p, Monad m) => MonadReader s (ReaderP s p a' a b' b m) where
+  ask = ReaderP.ask
+  local = ReaderP.local
+  reader = fmap ?? ask
 
 type CommandObj = (Command, [String])
 
 type ClientSend = ClientDirective -> IO ()
+
+data Settings = Settings
+  { _cabalFile          :: Maybe FilePath
+  , _refWarningsEnabled :: IORef Bool
+  , _refFileName        :: IORef GHC.FastString
+  , _refFilePath        :: IORef GHC.FastString
+  }
+makeLenses ''Settings
+
+data Options = Options
+  { _cabalMod     :: EpochTime
+  , _ghcOpts      :: [String]
+  , _needReconfig :: Bool
+  }
+makeLenses ''Options
+
+#if __GLASGOW_HASKELL__ >= 706
+type ErrorMsg = (GHC.DynFlags,ErrUtils.MsgDoc)
+#else
+type ErrorMsg = ErrorUtils.Message
+#endif
+
+data ErrorInfo = ErrorMsg
+  { _severity :: GHC.Severity
+  , _location :: GHC.SrcSpan
+  , _style    :: Outputable.PprStyle
+  , _message  :: ErrorMsg
+  }
+makeLenses ''ErrorInfo
 
 data State = State
     { stateWarningsEnabled :: Bool
@@ -42,6 +100,13 @@ data State = State
     , currentFilePath      :: GHC.FastString
     , cabalFileMod         :: EpochTime
     }
+
+defaultOptions :: Options
+defaultOptions = Options
+  { _cabalMod = 0
+  , _ghcOpts = []
+  , _needReconfig = True
+  }
 
 newCommandLoopState :: IO (IORef State)
 newCommandLoopState =
@@ -62,6 +127,63 @@ withWarnings state warningsValue action = do
     getWarnings = stateWarningsEnabled <$> readIORef state
     setWarnings :: Bool -> IO ()
     setWarnings val = modifyIORef state $ \s -> s { stateWarningsEnabled = val }
+
+commandLoop :: (Proxy p) => Input ErrorInfo -> () -> Pipe (StateP Options (ReaderP Settings p)) CommandObj ClientDirective IO ()
+commandLoop errorIn () = do
+  cabalOpts <- lift cabalMiscOptions
+  settings <- liftP ask
+  void $ hoist (liftIO . GHC.runGhc (Just GHC.Paths.libdir)) $ do
+    forever $ do
+      opts <- use ghcOpts
+      configOk <- lift $ GHC.gcatch (newSession settings errorIn (cabalOpts ++ opts) >> return True) handleConfigError
+      unless configOk $ needReconfig .= True
+
+  return ()
+
+processError :: () -> Pipe p ErrorInfo ClientDirective IO ()
+processError = error "todo"
+
+setupCommandLoop :: (Proxy p, MonadIO m) => Maybe FilePath -> [String] -> IO (Input CommandObj, Output ClientDirective)
+setupCommandLoop cabal initialGhcOpts = do
+  (serverInput,serverOutput) <- spawn Unbounded
+  (clientInput,clientOutput) <- spawn Unbounded
+  (errorIn, errorOut) <- spawn Unbounded
+  warnings <- newIORef True
+  fileName <- newIORef $ GHC.fsLit ""
+  filePath <- newIORef $ GHC.fsLit ""
+
+  _ <- forkIO $ do
+    runProxy $ runReaderK (Settings cabal warnings fileName filePath) $ evalStateK (defaultOptions & ghcOpts .~ initialGhcOpts) $
+      recvS clientOutput >-> commandLoop errorIn  >-> sendD serverInput
+    performGC
+
+  _ <- forkIO $ do
+    runProxy $ recvS errorOut >-> processError >-> sendD serverInput
+    performGC
+
+  return (clientInput,serverOutput)
+
+
+  -- hoist (liftIO . GHC.runGhc (Just GHC.Paths.libdir)) $ runStateP defaultOptions $ do
+  --   forever $ do
+  --     configOk <- lift $ GHC.gcatch (newSession (cabalOpts ++ initialGhcOpts) >> return True) handleConfigError
+  --     command <- request ()
+  --     return ()
+
+newSession :: Settings -> Input ErrorInfo -> [String] -> GHC.Ghc ()
+newSession settings errorIn opts = do
+  initialDynFlags <- GHC.getSessionDynFlags
+  let updatedDynFlags = initialDynFlags
+       { GHC.log_action = logAction' errorIn settings
+       , GHC.ghcLink = GHC.NoLink
+       , GHC.hscTarget = GHC.HscInterpreted
+       }
+  (finalDynFlags, _, _) <- GHC.parseDynamicFlags updatedDynFlags (map GHC.noLoc opts)
+  void $ GHC.setSessionDynFlags finalDynFlags
+
+
+handleConfigError :: GHC.GhcException -> GHC.Ghc Bool
+handleConfigError = error "todo"
 
 startCommandLoop :: Maybe FilePath -> IORef State -> ClientSend -> IO (Maybe CommandObj) -> [String] -> Maybe Command -> IO ()
 startCommandLoop cabal state clientSend getNextCommand initialGhcOpts mbInitial = do
@@ -259,6 +381,8 @@ modifySrcSpan real path (GHC.RealSrcSpan srcspan)
         lineEnd = GHC.srcSpanEndLine srcspan
 
 #if __GLASGOW_HASKELL__ >= 706
+
+
 logAction :: IORef State -> ClientSend -> GHC.DynFlags -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.MsgDoc -> IO ()
 logAction state clientSend dflags severity srcspan style msg = do
     s <- readIORef state
@@ -288,3 +412,7 @@ logActionSend currentState clientSend severity out =
     isWarning :: GHC.Severity -> Bool
     isWarning GHC.SevWarning = True
     isWarning _ = False
+
+logAction' :: Input ErrorInfo -> Settings -> GHC.DynFlags -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.MsgDoc -> IO ()
+logAction' errorIn s dflags severity sspan style doc = void $ atomically $ send errorIn msg
+  where msg = error "todo"
