@@ -72,4 +72,5 @@ executable hdevtools
                        lens,
                        pipes,
                        mtl,
-                       pipes-concurrency
+                       pipes-concurrency,
+                       monad-loops
