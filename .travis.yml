@@ -1,4 +1,8 @@
 language: haskell
+
+before_install:
+  - travis/cabal-apt-install  
+
 script:
   - cabal configure && cabal build && tests/test_runner.sh
 env: 

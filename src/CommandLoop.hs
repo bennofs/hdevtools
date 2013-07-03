@@ -58,12 +58,10 @@ import           Types
 instance (Proxy p, Monad m) => MonadState s (StateP s p a' a b' b m) where
   get = StateP.get
   put = StateP.put
-  state = StateP.state
 
 instance (Proxy p, Monad m) => MonadReader s (ReaderP s p a' a b' b m) where
   ask = ReaderP.ask
   local = ReaderP.local
-  reader = fmap ?? ask
 
 type CommandObj = (Command, [String])
 
