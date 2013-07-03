@@ -10,9 +10,8 @@ import           Control.Proxy.Concurrent  (atomically, recvS, send, sendD)
 import           Control.Proxy.Trans.Maybe
 import           Data.Maybe
 import           GHC.IO.Exception          (IOErrorType (ResourceVanished))
-import           Network                   (PortID (..), Socket, accept,
-                                            listenOn)
-import           Network.Socket            (close)
+import           Network                   hiding (send)
+import           Network.Socket            hiding (Socket, accept, send)
 import           System.Directory          (doesFileExist, removeFile)
 import           System.Exit               (ExitCode (ExitSuccess))
 import           System.IO
