@@ -63,7 +63,7 @@ executable hdevtools
                        ghc >= 7.2,
                        ghc-paths,
                        syb,
-                       network,
+                       network >= 2.4,
                        time,
                        unix,
                        Cabal,
