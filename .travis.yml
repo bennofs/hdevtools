@@ -1,0 +1,5 @@
+language: haskell
+script:
+  - cabal configure && cabal build && tests/test_runner.sh
+env: 
+  - HDEVTOOLS=dist/build/hdevtools/hdevtools

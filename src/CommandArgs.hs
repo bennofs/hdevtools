@@ -39,18 +39,21 @@ data HDevTools
         , status       :: Bool
         , stop_server  :: Bool
         , no_cabal     :: Bool
+        , verbose      :: Bool
         }
     | Check
         { socket   :: Maybe FilePath
         , ghcOpts  :: [String]
         , file     :: String
         , no_cabal :: Bool
+        , verbose  :: Bool
         }
     | ModuleFile
         { socket   :: Maybe FilePath
         , ghcOpts  :: [String]
         , module_  :: String
         , no_cabal :: Bool
+        , verbose  :: Bool
         }
     | Info
         { socket     :: Maybe FilePath
@@ -58,6 +61,7 @@ data HDevTools
         , file       :: String
         , identifier :: String
         , no_cabal   :: Bool
+        , verbose    :: Bool
         }
     | Type
         { socket   :: Maybe FilePath
@@ -66,6 +70,7 @@ data HDevTools
         , line     :: Int
         , col      :: Int
         , no_cabal :: Bool
+        , verbose  :: Bool
         }
     deriving (Show, Data, Typeable)
 
@@ -77,6 +82,7 @@ dummyAdmin = Admin
     , status = False
     , stop_server = False
     , no_cabal = False
+    , verbose = False
     }
 
 dummyCheck :: HDevTools
@@ -85,6 +91,7 @@ dummyCheck = Check
     , ghcOpts = []
     , file = ""
     , no_cabal = False
+    , verbose = False
     }
 
 dummyModuleFile :: HDevTools
@@ -93,6 +100,7 @@ dummyModuleFile = ModuleFile
     , ghcOpts = []
     , module_ = ""
     , no_cabal = False
+    , verbose = False
     }
 
 dummyInfo :: HDevTools
@@ -102,6 +110,7 @@ dummyInfo = Info
     , file = ""
     , identifier = ""
     , no_cabal = False
+    , verbose = False
     }
 
 dummyType :: HDevTools
@@ -112,6 +121,7 @@ dummyType = Type
     , line = 0
     , col = 0
     , no_cabal = False
+    , verbose = False
     }
 
 admin :: Annotate Ann
@@ -122,6 +132,7 @@ admin = record dummyAdmin
     , status   := def            += help "show status of server"
     , stop_server := def         += help "shutdown the server"
     , no_cabal := def            += help "don't search for a cabal file and behave like there wasn't any cabal file"
+    , verbose := def             += help "enable verbose mode"
     ] += help "Interactions with the server"
 
 check :: Annotate Ann

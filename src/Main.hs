@@ -61,8 +61,8 @@ doAdmin :: Maybe FilePath -> FilePath -> HDevTools -> IO ()
 doAdmin cabal sock args
     | start_server args =
         (if noDaemon args then id else daemonize True) $ withSocket sock $ startServer cabal
-    | status args = getServerStatus sock
-    | stop_server args = stopServer sock
+    | status args = getServerStatus (verbose args) sock
+    | stop_server args = stopServer (verbose args) sock
     | otherwise = do
         progName <- getProgName
         hPutStrLn stderr "You must provide a command. See:"
@@ -70,7 +70,7 @@ doAdmin cabal sock args
 
 doModuleFile :: Maybe FilePath -> FilePath -> HDevTools -> IO ()
 doModuleFile cabal sock args =
-    serverCommand cabal sock (CmdModuleFile (module_ args)) (ghcOpts args)
+    serverCommand (verbose args) cabal sock (CmdModuleFile (module_ args)) (ghcOpts args)
 
 doFileCommand :: FilePath -> Maybe FilePath -> String -> (FilePath -> HDevTools -> Command) -> FilePath -> HDevTools -> IO ()
 doFileCommand startDir cabal cmdName cmd sock args
@@ -78,7 +78,7 @@ doFileCommand startDir cabal cmdName cmd sock args
         progName <- getProgName
         hPutStrLn stderr "You must provide a haskell source file. See:"
         hPutStrLn stderr $ progName ++ " " ++ cmdName ++ " --help"
-    | otherwise = serverCommand cabal sock (cmd (file args) $ args {file = startDir </> file args}) (ghcOpts args)
+    | otherwise = serverCommand (verbose args) cabal sock (cmd (file args) $ args {file = startDir </> file args}) (ghcOpts args)
 
 doCheck :: FilePath -> Maybe FilePath -> FilePath -> HDevTools -> IO ()
 doCheck startDir cabal = doFileCommand startDir cabal "check" $

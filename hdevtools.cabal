@@ -73,4 +73,8 @@ executable hdevtools
                        pipes,
                        mtl,
                        pipes-concurrency,
-                       monad-loops
+                       pipes-network,
+                       monad-loops,
+                       containers,
+                       async,
+                       concurrent-extra

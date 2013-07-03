@@ -2,11 +2,11 @@ module Daemonize
     ( daemonize
     ) where
 
-import Control.Monad (when)
-import System.Exit (ExitCode(ExitSuccess))
-import System.Posix.Process (exitImmediately, createSession, forkProcess)
-import System.Posix.IO
-
+import           Control.Monad        (when)
+import           System.Exit          (ExitCode (ExitSuccess))
+import           System.Posix.IO
+import           System.Posix.Process (createSession, exitImmediately,
+                                       forkProcess)
 -- | This goes against the common daemon guidelines and does not change the
 -- current working directory!
 --

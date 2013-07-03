@@ -10,10 +10,13 @@
 {-# OPTIONS_GHC -fno-warn-orphans  #-}
 module CommandLoop
     ( setupCommandLoop
+    , CommandObj
     ) where
 
+import           Control.Applicative
 import           Control.Concurrent
-import           Control.Exception               (SomeException (..))
+import qualified Control.Concurrent.Event        as Event
+import           Control.Exception
 import           Control.Lens
 import           Control.Monad
 import           Control.Monad.Loops
@@ -26,23 +29,25 @@ import qualified Control.Proxy.Trans.Reader      as ReaderP
 import           Control.Proxy.Trans.State       hiding (get, gets, modify, put,
                                                   state, stateT)
 import qualified Control.Proxy.Trans.State       as StateP
+import           Data.Foldable                   (traverse_)
 import           Data.IORef
 import           Data.List                       (find)
 import           Data.Maybe
+import qualified Data.Sequence                   as S
 import           Distribution.PackageDescription (allBuildInfo, hsSourceDirs)
 import           Distribution.ParseUtils
 import qualified ErrUtils
 import qualified FastString                      as GHC
 import qualified GHC
 import qualified GHC.Paths
-import           MonadUtils                      (MonadIO, liftIO)
 import qualified MonadUtils                      as GHC
 import qualified Outputable
 import qualified SrcLoc                          as GHC
-import           System.Directory                (makeRelativeToCurrentDirectory)
+import           System.Directory                (canonicalizePath)
 import           System.Exit                     (ExitCode (ExitFailure, ExitSuccess))
-import           System.FilePath                 (takeDirectory)
+import           System.FilePath                 (makeRelative, takeDirectory)
 import           System.Posix.Files
+import           System.Posix.Signals
 import           System.Posix.Types
 
 import           Cabal
@@ -62,11 +67,22 @@ instance (Proxy p, Monad m) => MonadReader s (ReaderP s p a' a b' b m) where
 
 type CommandObj = (Command, [String])
 
+data ErrorInfo = ErrorInfo
+  { _severity       :: GHC.Severity
+  , _location       :: GHC.SrcSpan
+  , _style          :: Outputable.PprStyle
+  , _messageChanges :: String -> String
+  , _message        :: GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> String
+  }
+makeLenses ''ErrorInfo
+
 data Settings = Settings
   { _cabalFile          :: Maybe FilePath
   , _refWarningsEnabled :: IORef Bool
   , _refFileName        :: IORef GHC.FastString
   , _refFilePath        :: IORef GHC.FastString
+  , _refErrors          :: IORef (S.Seq ErrorInfo)
+  , _extraOptions       :: [String]
   }
 makeLenses ''Settings
 
@@ -76,15 +92,6 @@ data Options = Options
   , _needReconfig :: Bool
   }
 makeLenses ''Options
-
-data ErrorInfo = ErrorInfo
-  { _severity       :: GHC.Severity
-  , _location       :: GHC.SrcSpan
-  , _style          :: Outputable.PprStyle
-  , _messageChanges :: String -> String
-  , _message        :: GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> String
-  }
-makeLenses ''ErrorInfo
 
 defaultOptions :: Options
 defaultOptions = Options
@@ -99,26 +106,42 @@ readRef l = view l >>= lift . GHC.liftIO . readIORef
 writeRef :: (GHC.MonadIO m, MonadTrans t, MonadReader s (t m)) => Lens' s (IORef a) -> a -> t m ()
 writeRef l v = view l >>= lift . GHC.liftIO . flip writeIORef v
 
-commandLoop :: (Proxy p) => Input ErrorInfo -> () -> Pipe (StateP Options (ReaderP Settings p)) CommandObj ClientDirective IO ()
-commandLoop errorIn () = do
-  cabalOpts <- lift cabalMiscOptions
-  void $ hoist (liftIO . GHC.runGhc (Just GHC.Paths.libdir)) $ forever $ do
-      opts <- use ghcOpts
-      (configOk,errors) <- lift $ GHC.gcatch (newSession errorIn (cabalOpts ++ opts) >> return (True,[])) handleConfigError
-      unless configOk $ traverse respond errors >> needReconfig .= True
-      (request () >>= (unitD ->>) . processCommandObj) `untilM` use needReconfig
+commandLoop :: (Proxy p) => () -> Pipe (StateP Options (ReaderP Settings p)) CommandObj ClientDirective GHC.Ghc ()
+commandLoop () = do
+  let status = respond . ClientLog "CommandLoop"
+  forever $ do
+    unitD ->> reconfigure
+    status "Process commands"
+    (request () >>= (unitD ->>) . processCommandObj) `untilM` use needReconfig
 
-  return ()
+reconfigure :: (Proxy p) => Producer (StateP Options (ReaderP Settings p)) ClientDirective GHC.Ghc ()
+reconfigure = do
+  let status = respond . ClientLog "Reconfigure"
+  status "Updating GHC options"
+  opts <- use ghcOpts
+  settings <- liftP ask
+  (configOk,errors) <- lift $ GHC.gcatch (newSession (settings ^. refErrors) (settings ^. extraOptions ++ opts) >> return (True,[])) handleConfigError
+  status "Processing configure result"
+  needReconfig .= not configOk
+  unless configOk $ traverse_ respond errors
 
 processCommandObj :: (Proxy p) => CommandObj -> Producer (StateP Options (ReaderP Settings p)) ClientDirective GHC.Ghc ()
 processCommandObj (command,opts') = do
+  let logmsg = respond . ClientLog "processCommandObj"
+  logmsg $ "Processing command: " ++ show command
   opts <- use ghcOpts
-  if opts /= opts'
-    then do
-      ghcOpts .= opts'
-      needReconfig .= True
-    else runCommand command
-
+  when (opts /= opts') $ do
+    logmsg "Reconfigure needed"
+    needReconfig .= True
+  liftP $ writeRef refErrors S.empty
+  result <- runCommand command
+  logmsg "Finished executing command. Start collecting errors"
+  errors <- liftP $ readRef refErrors
+  logmsg "Responding with errors"
+  traverse_ processError errors
+  logmsg "Done. Returning ClientExit status"
+  respond $ ClientExit result
+  return ()
 
 renderError :: ErrorInfo -> String
 renderError err = view message err (err ^. severity) (err ^. location) (err ^. style)
@@ -127,9 +150,8 @@ isWarning :: GHC.Severity -> Bool
 isWarning GHC.SevWarning = True
 isWarning _ = False
 
-processError :: (Proxy p) => () -> Pipe (ReaderP Settings p) ErrorInfo ClientDirective IO ()
-processError () = forever $ do
-  err <- request ()
+processError :: (Proxy p) => ErrorInfo -> Producer (StateP Options (ReaderP Settings p)) ClientDirective GHC.Ghc ()
+processError err = liftP $ hoist GHC.liftIO $ do
   name <- lift . readIORef =<< view refFileName
   path <- lift . readIORef =<< view refFilePath
   warningsEnabled <- lift . readIORef =<< view refWarningsEnabled
@@ -137,28 +159,34 @@ processError () = forever $ do
   when (warningsEnabled || not (isWarning $ err ^. severity)) $
     respond $ ClientStdout msg
 
-
-setupCommandLoop :: (Proxy p, MonadIO m) => Maybe FilePath -> [String] -> IO (Input CommandObj, Output ClientDirective)
+setupCommandLoop :: Maybe FilePath -> [String] -> IO (Input CommandObj, Output ClientDirective, Input ClientDirective)
 setupCommandLoop cabal initialGhcOpts = do
   (serverInput,serverOutput) <- spawn Unbounded
   (clientInput,clientOutput) <- spawn Unbounded
-  (errorIn, errorOut) <- spawn Unbounded
   warnings <- newIORef True
   fileName <- newIORef $ GHC.fsLit ""
   filePath <- newIORef $ GHC.fsLit ""
+  errors <- newIORef S.empty
+  cabalOptions <- cabalMiscOptions
+  let settings = Settings cabal warnings fileName filePath errors cabalOptions
+
+  finishGHCstartup <- Event.new
 
   _ <- forkIO $ do
-    runProxy $ runReaderK (Settings cabal warnings fileName filePath) $ evalStateK (defaultOptions & ghcOpts .~ initialGhcOpts) $
-      recvS clientOutput >-> commandLoop errorIn  >-> sendD serverInput
-    performGC
+    GHC.runGhc (Just GHC.Paths.libdir) $ do
+       GHC.liftIO $ Event.signal finishGHCstartup
+       runProxy $ runReaderK settings $ evalStateK (defaultOptions & ghcOpts .~ initialGhcOpts) $
+         hoist GHC.liftIO . recvS clientOutput >-> commandLoop >-> hoist GHC.liftIO . sendD serverInput
 
-  _ <- forkIO $ do
-    runProxy $ runReaderK (Settings cabal warnings fileName filePath) $ recvS errorOut >-> processError >-> sendD serverInput
-    performGC
+  -- GHC for some reason changes the default ^C handlers. They don't work when used in a thread, so we reset
+  -- them here, after GHC started so we're sure to override GHC's handler.
+  Event.wait finishGHCstartup
+  _ <- installHandler sigINT Default Nothing
+  _ <- installHandler sigTERM Default Nothing
 
-  return (clientInput,serverOutput)
+  return (clientInput,serverOutput,serverInput)
 
-newSession :: Input ErrorInfo -> [String] -> GHC.Ghc ()
+newSession :: IORef (S.Seq ErrorInfo) -> [String] -> GHC.Ghc ()
 newSession errorIn opts = do
   initialDynFlags <- GHC.getSessionDynFlags
   let updatedDynFlags = initialDynFlags
@@ -191,15 +219,17 @@ cabalCached file action = do
 
 setCabalPerFileOpts :: (Proxy p) => FilePath -> Producer (StateP Options (ReaderP Settings p)) ClientDirective GHC.Ghc ()
 setCabalPerFileOpts configPath = cabalCached configPath $ do
-  respond $ ClientLog "Loading cabal"
+  respond $ ClientLog "CabalFileOpts" "Loading cabal"
   file <- fmap GHC.unpackFS $ liftP $ readRef refFileName
-  f <- lift $ GHC.liftIO $ makeRelativeToCurrentDirectory file
+  cabalDir <- lift $ GHC.liftIO $ canonicalizePath $ takeDirectory configPath
+  fileRel <- lift $ GHC.liftIO $ makeRelative cabalDir <$> canonicalizePath file
   config <- lift $ GHC.liftIO $ readFile configPath
   case parseCabalConfig config of
     (ParseFailed _) -> respond $ ClientStderr "Warning: Parsing of the cabal config failed. Please correct it, or use --no-cabal."
     (ParseOk _ r) -> do
       let srcInclude = "-i" ++ takeDirectory file
-      let opts = fromMaybe [] $ getBuildInfoOptions =<< findBuildInfoFile r f
+      let opts = fromMaybe [] $ getBuildInfoOptions =<< findBuildInfoFile r fileRel
+      respond $ ClientLog "CabalFileOpts" $ "Cabal: Added options " ++ show opts
       dynFlags <- lift GHC.getSessionDynFlags
       (finalDynFlags, _, _) <- lift $ GHC.parseDynamicFlags dynFlags (map GHC.noLoc $ srcInclude : opts)
       void $ lift $ GHC.setSessionDynFlags finalDynFlags
@@ -216,7 +246,7 @@ setAllCabalImportDirs cabal = runIdentityP $ do
       void $ lift $ GHC.setSessionDynFlags finalDynFlags
 
 setCurrentFile :: (Proxy p) => FilePath -> FilePath -> Producer (StateP Options (ReaderP Settings p)) ClientDirective GHC.Ghc ()
-setCurrentFile name path = liftP $ do
+setCurrentFile path name = liftP $ do
   writeRef refFileName $ GHC.fsLit name
   writeRef refFilePath $ GHC.fsLit path
 
@@ -227,67 +257,80 @@ withWarnings v action = do
   liftP $ writeRef refWarningsEnabled v
   lift (action `GHC.gfinally` GHC.liftIO (writeIORef ref beforeValue))
 
-runCommand :: (Proxy p) => Command -> Producer (StateP Options (ReaderP Settings p)) ClientDirective GHC.Ghc ()
+runCommand :: (Proxy p) => Command -> Producer (StateP Options (ReaderP Settings p)) ClientDirective GHC.Ghc ExitCode
 runCommand (CmdCheck real file) = do
-    respond $ ClientLog "[Check] Initalize state"
+    let status = respond . ClientLog "Check"
+    status "Initalize state and cabal"
     setCurrentFile real file
-    respond $ ClientLog "[Check] Load cabal"
     let noPhase = Nothing
     liftP (view cabalFile) >>= flip doMaybe setCabalPerFileOpts
-    respond $ ClientLog "[Check] Load target"
+    status "Load target"
     target <- lift $ GHC.guessTarget file noPhase
     lift $ GHC.setTargets [target]
     let handler err = GHC.printException err >> return GHC.Failed
-    respond $ ClientLog "[Check] Compile target"
+    status "Compile target"
     flag <- lift $ GHC.handleSourceError handler (GHC.load GHC.LoadAllTargets)
-    respond $ ClientLog "[Check] Send result"
+    status "Check result"
     case flag of
-        GHC.Succeeded -> respond $ ClientExit ExitSuccess
-        GHC.Failed -> respond $ ClientExit (ExitFailure 1)
+        GHC.Succeeded -> return ExitSuccess
+        GHC.Failed -> return $ ExitFailure 1
 runCommand (CmdModuleFile moduleName) = do
+    let status = respond . ClientLog "ModuleFile"
+    status "Initialize cabal"
     liftP (view cabalFile) >>= flip doMaybe setAllCabalImportDirs
+    status "Load target"
     target <- lift $ GHC.guessTarget moduleName Nothing
     lift $ GHC.setTargets [target]
     -- TODO: This currently fails, need to figure out why (when cabal support enabled)
+    status "Build module graph"
     moduleGraph <- lift $ GHC.depanal [] False `GHC.gcatch` \(SomeException _) -> return []
+    status "Find module"
     case find (moduleSummaryMatchesModuleName moduleName) moduleGraph of
         Nothing -> do
           respond $ ClientStderr "Module not found"
-          respond $ ClientExit (ExitFailure 1)
+          return $ ExitFailure 1
         Just modSummary ->
             case GHC.ml_hs_file (GHC.ms_location modSummary) of
                 Nothing -> do
                   respond $ ClientStderr "Module does not have a source file"
-                  respond $ ClientExit (ExitFailure 1)
+                  return $ ExitFailure 1
                 Just file -> do
                   respond $ ClientStdout file
-                  respond $ ClientExit ExitSuccess
+                  return ExitSuccess
     where
     moduleSummaryMatchesModuleName modName modSummary =
         modName == (GHC.moduleNameString . GHC.moduleName . GHC.ms_mod) modSummary
 runCommand (CmdInfo real file identifier) = do
+    let status = respond . ClientLog "Info"
+    status "Initialize state and cabal"
     setCurrentFile real file
     liftP (view cabalFile) >>= flip doMaybe setCabalPerFileOpts
+    status "Get info"
     result <- withWarnings False $ getIdentifierInfo file identifier
+    status "Check result"
     case result of
         Left err -> do
           respond $ ClientStderr err
-          respond $ ClientExit (ExitFailure 1)
+          return $ ExitFailure 1
         Right info -> do
            respond $ ClientStdout info
-           respond $ ClientExit ExitSuccess
+           return ExitSuccess
 runCommand (CmdType real file (line, col)) = do
+    let status = respond . ClientLog "Type"
+    status "Initialize state and cabal"
     setCurrentFile real file
     liftP (view cabalFile) >>= flip doMaybe setCabalPerFileOpts
+    status "Get type"
     result <- withWarnings False $
         getType file (line, col)
+    status "Check result"
     case result of
         Left err -> do
           respond $ ClientStderr err
-          respond $ ClientExit (ExitFailure 1)
+          return $ ExitFailure 1
         Right types -> do
             mapM_ (respond . ClientStdout . formatType) types
-            respond $ ClientExit ExitSuccess
+            return ExitSuccess
     where
     formatType :: ((Int, Int, Int, Int), String) -> String
     formatType ((startLine, startCol, endLine, endCol), t) =
@@ -314,14 +357,15 @@ adjustFileName fname fpath info = case info ^. location of
 
 #if __GLASGOW_HASKELL__ >= 706
 
-logAction' :: Input ErrorInfo -> GHC.DynFlags -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.MsgDoc -> IO ()
-logAction' errorIn dflags sev sspan mstyle doc = void $ atomically $ send errorIn $ ErrorInfo sev sspan mstyle id f
+logAction' :: IORef (S.Seq ErrorInfo) -> GHC.DynFlags -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.MsgDoc -> IO ()
+logAction' errorIn dflags sev sspan mstyle doc =
+  modifyIORef errorIn $ (S.|> ErrorInfo sev sspan mstyle id f)
   where f sev' span' = Outputable.renderWithStyle dflags (ErrUtils.mkLocMessage sev' span' doc)
 
 #else
 
-logAction' :: Input ErrorInfo -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.Message -> IO ()
-logAction' errorIn sev sspan mstyle doc = void $ atomically $ send errorIn $ ErrorInfo sev sspan mstyle id f
+logAction' :: IORef (S.Seq ErrorInfo) -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.Message -> IO ()
+logAction' errorIn sev sspan mstyle doc = modifyIORef errorIn $ (S.|> ErrorInfo sev sspan mstyle id f)
   where f sev' span' = Outputable.renderWithStyle (ErrUtils.mkLocMessage span' doc)
 
 
