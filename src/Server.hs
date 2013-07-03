@@ -10,8 +10,8 @@ import           Control.Proxy.Concurrent  (atomically, recvS, send, sendD)
 import           Control.Proxy.Trans.Maybe
 import           Data.Maybe
 import           GHC.IO.Exception          (IOErrorType (ResourceVanished))
-import           Network                   hiding (send)
-import           Network.Socket            hiding (Socket, accept, send)
+import qualified Network                   as N
+import qualified Network.Socket            as N hiding (accept)
 import           System.Directory          (doesFileExist, removeFile)
 import           System.Exit               (ExitCode (ExitSuccess))
 import           System.IO
@@ -21,20 +21,20 @@ import           CommandLoop
 import           Types
 import           Util
 
-withSocket :: FilePath -> (Socket -> IO a) -> IO a
+withSocket :: FilePath -> (N.Socket -> IO a) -> IO a
 withSocket sock = bracket (createListenSocket sock) (cleanupSocket sock)
 
-cleanupSocket :: FilePath -> Socket -> IO ()
+cleanupSocket :: FilePath -> N.Socket -> IO ()
 cleanupSocket sockFile sock = do
-  close sock
+  N.close sock
   whenM (doesFileExist sockFile) $ removeFile sockFile
 
-createListenSocket :: FilePath -> IO Socket
-createListenSocket socketPath = listenOn (UnixSocket socketPath)
+createListenSocket :: FilePath -> IO N.Socket
+createListenSocket socketPath = N.listenOn (N.UnixSocket socketPath)
 
-acceptOne :: Socket -> (Handle -> IO a) -> IO a
+acceptOne :: N.Socket -> (Handle -> IO a) -> IO a
 acceptOne sock action = do
-  (clientHandle,_,_) <- accept sock
+  (clientHandle,_,_) <- N.accept sock
   action clientHandle
 
 ignoreEPipe :: a -> IO a -> IO a
@@ -70,7 +70,7 @@ takeUntilD f = runIdentityK go
           a'' <- respond a
           when (f a) $ go a''
 
-startServer :: Maybe FilePath -> Socket -> IO ()
+startServer :: Maybe FilePath -> N.Socket -> IO ()
 startServer cabal sock = do
   (inp,outp,rawi) <- setupCommandLoop cabal []
   void $ iterateWhile id $ acceptOne sock $ \clientHandle -> ignoreEPipe True $ do
