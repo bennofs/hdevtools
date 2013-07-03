@@ -1,4 +1,4 @@
-hdevtools
+hdevtools [![Build Status](https://travis-ci.org/bennofs/hdevtools.png?branch=master)](https://travis-ci.org/bennofs/hdevtools)
 =========
 
 Persistent GHC powered background server for FAST Haskell development tools
