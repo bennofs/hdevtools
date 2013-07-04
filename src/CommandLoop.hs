@@ -176,11 +176,12 @@ setupCommandLoop cabal initialGhcOpts = do
        runProxy $ runReaderK settings $ evalStateK (defaultOptions & ghcOpts .~ initialGhcOpts) $
          hoist GHC.liftIO . recvS clientOutput >-> commandLoop >-> hoist GHC.liftIO . sendD serverInput
 
+  t <- myThreadId
   -- GHC for some reason changes the default ^C handlers. They don't work when used in a thread, so we reset
   -- them here, after GHC started so we're sure to override GHC's handler.
   Event.wait finishGHCstartup
-  _ <- installHandler sigINT Default Nothing
-  _ <- installHandler sigTERM Default Nothing
+  _ <- installHandler sigINT (Catch $ throwTo t UserInterrupt) Nothing
+  _ <- installHandler sigTERM (Catch $ throwTo t UserInterrupt) Nothing
 
   return (clientInput,serverOutput,serverInput)
 
@@ -232,13 +233,14 @@ setCabalPerFileOpts configPath = cabalCached configPath $ do
       (finalDynFlags, _, _) <- lift $ GHC.parseDynamicFlags dynFlags (map GHC.noLoc $ srcInclude : opts)
       void $ lift $ GHC.setSessionDynFlags finalDynFlags
 
-setAllCabalImportDirs :: (Proxy p) => FilePath -> Producer p a GHC.Ghc ()
+setAllCabalImportDirs :: (Proxy p) => FilePath -> Producer p ClientDirective GHC.Ghc ()
 setAllCabalImportDirs cabal = runIdentityP $ do
   config <- lift $ GHC.liftIO $ readFile cabal
   case parseCabalConfig config of
     (ParseFailed _) -> return ()
     (ParseOk _ r) -> do
       let dirs = allBuildInfo r >>= hsSourceDirs
+      respond $ ClientLog "setAllCabalImportDirs" $ "Added directories: " ++ show dirs
       dynFlags <- lift GHC.getSessionDynFlags
       (finalDynFlags,_,_) <- lift $ GHC.parseDynamicFlags dynFlags (map (GHC.noLoc . ("-i" ++)) dirs)
       void $ lift $ GHC.setSessionDynFlags finalDynFlags

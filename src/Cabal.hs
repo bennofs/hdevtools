@@ -57,7 +57,7 @@ packageDBFlag = "-package-conf"
 cabalMiscOptions :: IO [String]
 cabalMiscOptions =
   fmap concat $ sequence
-  [ pureIfM (doesFileExist localDB) $ "-package-db " ++ localDB
+  [ pureIfM (doesFileExist localDB) $ packageDBFlag ++ " " ++ localDB
   , ifM (doesFileExist macros) ["-optP-include", "-optP" ++ macros]
   ]
   where localDB = "dist/package.conf.inplace"
