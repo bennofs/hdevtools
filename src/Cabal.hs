@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE MonadComprehensions #-}
 module Cabal where
 
@@ -45,6 +46,13 @@ pureIfM w = ifM w . pure
 
 ifM :: (Functor m, Alternative f) => m Bool -> f a -> m (f a)
 ifM w v = if' empty v <$> w
+
+packageDBFlag :: String
+#if __GLASGLOW_HASKELL__ >= 706
+packageDBFlag = "-package-db"
+#else
+packageDBFlag = "-package-conf"
+#endif
 
 cabalMiscOptions :: IO [String]
 cabalMiscOptions =
