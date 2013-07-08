@@ -4,19 +4,21 @@ module Client
     , serverCommand
     ) where
 
-import           Control.Exception (finally, tryJust)
-import           Control.Monad     (guard, when)
-import           Daemonize         (daemonize)
-import           Network           (PortID (UnixSocket), connectTo)
-import           Server            (cleanupSocket, createListenSocket,
-                                    startServer)
-import           System.Exit       (exitFailure, exitWith)
-import           System.IO         (Handle, hClose, hFlush, hGetLine, hPrint,
-                                    hPutStrLn, stderr)
-import           System.IO.Error   (isDoesNotExistError)
-import           Types             (ClientDirective (..), Command (..),
-                                    ServerDirective (..))
-import           Util              (readMaybe)
+import           Control.Exception    (finally, tryJust)
+import           Control.Monad        (guard, when)
+import           Control.Monad.IfElse (whenM)
+import           Daemonize            (daemonize)
+import           Network              (PortID (UnixSocket), connectTo)
+import           Server               (cleanupSocket, createListenSocket,
+                                       startServer)
+import           System.Directory     (doesFileExist, removeFile)
+import           System.Exit          (exitFailure, exitWith)
+import           System.IO            (Handle, hClose, hFlush, hGetLine, hPrint,
+                                       hPutStrLn, stderr)
+import           System.IO.Error      (isDoesNotExistError)
+import           Types                (ClientDirective (..), Command (..),
+                                       ServerDirective (..))
+import           Util                 (readMaybe)
 
 connect :: FilePath -> IO Handle
 connect = connectTo "" . UnixSocket
@@ -44,6 +46,7 @@ serverCommand verbose cabal sock cmd ghcOpts = do
             hFlush h
             startClientReadLoop verbose h
         Left _ -> do
+             whenM (doesFileExist sock) $ removeFile sock
              s <- createListenSocket sock
              daemonize False $ startServer cabal s `finally` cleanupSocket sock s
              serverCommand verbose cabal sock cmd ghcOpts
