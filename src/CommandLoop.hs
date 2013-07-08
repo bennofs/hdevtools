@@ -6,6 +6,7 @@
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE TemplateHaskell       #-}
 {-# LANGUAGE TupleSections         #-}
+{-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# OPTIONS_GHC -fno-warn-orphans  #-}
 module CommandLoop
@@ -36,6 +37,7 @@ import           Data.Maybe
 import qualified Data.Sequence                   as S
 import           Distribution.PackageDescription (allBuildInfo, hsSourceDirs)
 import           Distribution.ParseUtils
+import qualified DynFlags                        as GHC
 import qualified ErrUtils
 import qualified FastString                      as GHC
 import qualified GHC
@@ -118,10 +120,9 @@ reconfigure = do
   status "Updating GHC options"
   opts <- use ghcOpts
   settings <- liftP ask
-  (configOk,errors) <- lift $ GHC.gcatch (newSession (settings ^. refErrors) (settings ^. extraOptions ++ opts) >> return (True,[])) handleConfigError
+  configOk <- newSession (settings ^. refErrors) (settings ^. extraOptions ++ opts)
   status "Processing configure result"
   needReconfig .= not configOk
-  unless configOk $ traverse_ respond errors
 
 processCommandObj :: (Proxy p) => CommandObj -> Producer (StateP Options (ReaderP Settings p)) ClientDirective GHC.Ghc ()
 processCommandObj (command,opts') = do
@@ -185,10 +186,10 @@ setupCommandLoop cabal initialGhcOpts = do
 
   return (clientInput,serverOutput,serverInput)
 
-newSession :: IORef (S.Seq ErrorInfo) -> [String] -> GHC.Ghc ()
-newSession errorIn opts = do
+newSession :: (Proxy p) => IORef (S.Seq ErrorInfo) -> [String] -> Producer p ClientDirective GHC.Ghc Bool
+newSession errorIn opts = handleGHCException $ do
   initialDynFlags <- GHC.getSessionDynFlags
-  let updatedDynFlags = initialDynFlags
+  let updatedDynFlags = GHC.dopt_unset ?? GHC.Opt_WarnIsError $ initialDynFlags
        { GHC.log_action = logAction' errorIn
        , GHC.ghcLink = GHC.NoLink
        , GHC.hscTarget = GHC.HscInterpreted
@@ -197,15 +198,15 @@ newSession errorIn opts = do
   void $ GHC.setSessionDynFlags finalDynFlags
 
 
-handleConfigError :: GHC.GhcException -> GHC.Ghc (Bool, [ClientDirective])
-handleConfigError e = return $ (False,)
-  [ ClientStderr (GHC.showGhcException e "")
-  , ClientExit (ExitFailure 1)
-  ]
-
-doMaybe :: Monad m => Maybe a -> (a -> m ()) -> m ()
-doMaybe Nothing _ = return ()
-doMaybe (Just x) f = f x
+handleGHCException :: (Proxy p) => GHC.Ghc () -> Producer p ClientDirective GHC.Ghc Bool
+handleGHCException action = runIdentityP $ do
+  errM <- lift $ GHC.gcatch (Nothing <$ action) (return . Just . flip GHC.showGhcException "")
+  case errM of
+    Nothing -> return True
+    (Just err) -> do
+      respond $ ClientStderr err
+      respond $ ClientExit $ ExitFailure 1
+      return False
 
 cabalCached :: (MonadTrans t, MonadState Options (t m), GHC.GhcMonad m) => FilePath -> t m () -> t m ()
 cabalCached file action = do
@@ -228,10 +229,10 @@ setCabalPerFileOpts configPath = cabalCached configPath $ do
     (ParseOk _ r) -> do
       let srcInclude = "-i" ++ takeDirectory file
       let opts = fromMaybe [] $ getBuildInfoOptions =<< findBuildInfoFile r fileRel
-      respond $ ClientLog "CabalFileOpts" $ "Cabal: Added options " ++ show opts
+      respond $ ClientLog "CabalFileOpts" $ "Cabal: Adding options " ++ show opts
       dynFlags <- lift GHC.getSessionDynFlags
       (finalDynFlags, _, _) <- lift $ GHC.parseDynamicFlags dynFlags (map GHC.noLoc $ srcInclude : opts)
-      void $ lift $ GHC.setSessionDynFlags finalDynFlags
+      void $ handleGHCException $ void $ GHC.setSessionDynFlags finalDynFlags
 
 setAllCabalImportDirs :: (Proxy p) => FilePath -> Producer p ClientDirective GHC.Ghc ()
 setAllCabalImportDirs cabal = runIdentityP $ do
@@ -243,7 +244,7 @@ setAllCabalImportDirs cabal = runIdentityP $ do
       respond $ ClientLog "setAllCabalImportDirs" $ "Added directories: " ++ show dirs
       dynFlags <- lift GHC.getSessionDynFlags
       (finalDynFlags,_,_) <- lift $ GHC.parseDynamicFlags dynFlags (map (GHC.noLoc . ("-i" ++)) dirs)
-      void $ lift $ GHC.setSessionDynFlags finalDynFlags
+      void $ handleGHCException $ void $ GHC.setSessionDynFlags finalDynFlags
 
 setCurrentFile :: (Proxy p) => FilePath -> FilePath -> Producer (StateP Options (ReaderP Settings p)) ClientDirective GHC.Ghc ()
 setCurrentFile path name = liftP $ do
@@ -263,7 +264,7 @@ runCommand (CmdCheck real file) = do
     status "Initalize state and cabal"
     setCurrentFile real file
     let noPhase = Nothing
-    liftP (view cabalFile) >>= flip doMaybe setCabalPerFileOpts
+    liftP (view cabalFile) >>= traverse_ setCabalPerFileOpts
     status "Load target"
     target <- lift $ GHC.guessTarget file noPhase
     lift $ GHC.setTargets [target]
@@ -277,7 +278,7 @@ runCommand (CmdCheck real file) = do
 runCommand (CmdModuleFile moduleName) = do
     let status = respond . ClientLog "ModuleFile"
     status "Initialize cabal"
-    liftP (view cabalFile) >>= flip doMaybe setAllCabalImportDirs
+    liftP (view cabalFile) >>= traverse_ setAllCabalImportDirs
     status "Load target"
     target <- lift $ GHC.guessTarget moduleName Nothing
     lift $ GHC.setTargets [target]
@@ -304,7 +305,7 @@ runCommand (CmdInfo real file identifier) = do
     let status = respond . ClientLog "Info"
     status "Initialize state and cabal"
     setCurrentFile real file
-    liftP (view cabalFile) >>= flip doMaybe setCabalPerFileOpts
+    liftP (view cabalFile) >>= traverse_ setCabalPerFileOpts
     status "Get info"
     result <- withWarnings False $ getIdentifierInfo file identifier
     status "Check result"
@@ -319,7 +320,7 @@ runCommand (CmdType real file (line, col)) = do
     let status = respond . ClientLog "Type"
     status "Initialize state and cabal"
     setCurrentFile real file
-    liftP (view cabalFile) >>= flip doMaybe setCabalPerFileOpts
+    liftP (view cabalFile) >>= traverse_ setCabalPerFileOpts
     status "Get type"
     result <- withWarnings False $
         getType file (line, col)
