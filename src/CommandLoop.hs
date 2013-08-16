@@ -143,7 +143,7 @@ processCommandObj (command,opts') = do
   return ()
 
 renderError :: ErrorInfo -> String
-renderError err = view message err (err ^. severity) (err ^. location) (err ^. style)
+renderError err = err ^. messageChanges $ view message err (err ^. severity) (err ^. location) (err ^. style)
 
 isWarning :: GHC.Severity -> Bool
 isWarning GHC.SevWarning = True
@@ -151,10 +151,8 @@ isWarning _ = False
 
 processError :: (Proxy p) => ErrorInfo -> Producer (StateP Options (ReaderP Settings p)) ClientDirective GHC.Ghc ()
 processError err = liftP $ hoist GHC.liftIO $ do
-  name <- lift . readIORef =<< view refFileName
-  path <- lift . readIORef =<< view refFilePath
   warningsEnabled <- lift . readIORef =<< view refWarningsEnabled
-  let msg = renderError $ adjustFileName name path err
+  msg <- lift $ GHC.liftIO $ fmap renderError $ err & location absoluteFileName
   when (warningsEnabled || not (isWarning $ err ^. severity)) $
     respond $ ClientStdout msg
 
@@ -178,8 +176,9 @@ setupCommandLoop cabal initialGhcOpts = do
          hoist GHC.liftIO . recvS clientOutput >-> commandLoop >-> hoist GHC.liftIO . sendD serverInput
 
   t <- myThreadId
-  -- GHC for some reason changes the default ^C handlers. They don't work when used in a thread, so we reset
-  -- them here, after GHC started so we're sure to override GHC's handler.
+
+  -- for some reason GHC changes the default ^C handlers. They don't work when used in a thread, so we reset
+  -- them here, after GHC started to make sure we override GHC's handler.
   Event.wait finishGHCstartup
   _ <- installHandler sigINT (Catch $ throwTo t UserInterrupt) Nothing
   _ <- installHandler sigTERM (Catch $ throwTo t UserInterrupt) Nothing
@@ -194,7 +193,7 @@ newSession errorIn opts = handleGHCException $ do
        , GHC.ghcLink = GHC.NoLink
        , GHC.hscTarget = GHC.HscInterpreted
        }
-  (finalDynFlags, _, _) <- GHC.parseDynamicFlags updatedDynFlags (map GHC.noLoc opts)
+  (finalDynFlags, _, _) <- GHC.parseDynamicFlags updatedDynFlags (map GHC.noLoc $ ["-Wall"] ++ opts)
   void $ GHC.setSessionDynFlags finalDynFlags
 
 
@@ -232,7 +231,7 @@ setCabalPerFileOpts configPath = cabalCached configPath $ do
       respond $ ClientLog "CabalFileOpts" $ "Cabal: Adding options " ++ show opts
       dynFlags <- lift GHC.getSessionDynFlags
       (finalDynFlags, _, _) <- lift $ GHC.parseDynamicFlags dynFlags (map GHC.noLoc $ srcInclude : opts)
-      void $ handleGHCException $ void $ GHC.setSessionDynFlags finalDynFlags
+      void $ handleGHCException $ void $ GHC.setSessionDynFlags $ finalDynFlags `GHC.dopt_unset` GHC.Opt_WarnIsError
 
 setAllCabalImportDirs :: (Proxy p) => FilePath -> Producer p ClientDirective GHC.Ghc ()
 setAllCabalImportDirs cabal = runIdentityP $ do
@@ -265,6 +264,9 @@ runCommand (CmdCheck real file) = do
     setCurrentFile real file
     let noPhase = Nothing
     liftP (view cabalFile) >>= traverse_ setCabalPerFileOpts
+    status "Unload previous target"
+    lift $ GHC.setTargets []
+    void $ lift $ GHC.load GHC.LoadAllTargets
     status "Load target"
     target <- lift $ GHC.guessTarget file noPhase
     lift $ GHC.setTargets [target]
@@ -343,10 +345,19 @@ runCommand (CmdType real file (line, col)) = do
             , "\"", t, "\""
             ]
 
+absoluteFileName :: GHC.SrcSpan -> IO GHC.SrcSpan
+absoluteFileName s@(GHC.UnhelpfulSpan _) = return s
+absoluteFileName (GHC.RealSrcSpan span') = do
+  let file = GHC.unpackFS $ GHC.srcSpanFile span'
+  file' <- GHC.mkFastString <$> canonicalizePath file
+  return $ GHC.RealSrcSpan $ GHC.mkRealSrcSpan
+    (GHC.mkRealSrcLoc file' (GHC.srcSpanStartLine span') (GHC.srcSpanStartCol span'))
+    (GHC.mkRealSrcLoc file' (GHC.srcSpanEndLine span') (GHC.srcSpanEndCol span'))
+
 adjustFileName :: GHC.FastString -> GHC.FastString -> ErrorInfo -> ErrorInfo
 adjustFileName fname fpath info = case info ^. location of
   (GHC.UnhelpfulSpan _) -> inOtherFile ""
-  (GHC.RealSrcSpan span') -> if GHC.srcSpanFile span' == fpath then info & location .~ fileSrcSpan span' else inOtherFile $ GHC.unpackFS fname
+  (GHC.RealSrcSpan span') -> if GHC.srcSpanFile span' == fname then info & location .~ fileSrcSpan span' else inOtherFile $ GHC.unpackFS fname
   where inOtherFile f = info & messageChanges . mapped %~ ((f ++ ": ") ++)
                              & location .~ firstLineSpan
         firstLineSpan = GHC.RealSrcSpan $ GHC.mkRealSrcSpan (GHC.mkRealSrcLoc fname 1 1) (GHC.mkRealSrcLoc fname 1 1)
