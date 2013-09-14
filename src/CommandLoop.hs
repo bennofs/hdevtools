@@ -69,8 +69,8 @@ data ErrorInfo = ErrorInfo
   { _severity       :: GHC.Severity
   , _location       :: GHC.SrcSpan
   , _style          :: Outputable.PprStyle
-  , _messageChanges :: String -> String
-  , _message        :: GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> String
+  , _messageChanges :: Outputable.SDoc -> Outputable.SDoc
+  , _message        :: (Outputable.SDoc -> Outputable.SDoc) -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> String
   }
 makeLenses ''ErrorInfo
 
@@ -142,7 +142,7 @@ processCommandObj (command,opts') = do
   return ()
 
 renderError :: ErrorInfo -> String
-renderError err = err ^. messageChanges $ view message err (err ^. severity) (err ^. location) (err ^. style)
+renderError err = view message err (err ^. messageChanges) (err ^. severity) (err ^. location) (err ^. style)
 
 isWarning :: GHC.Severity -> Bool
 isWarning GHC.SevWarning = True
@@ -153,7 +153,7 @@ processError err = liftP $ hoist GHC.liftIO $ do
   warningsEnabled <- readRef refWarningsEnabled
   fname <- readRef refFileName
   fpath <- readRef refFilePath
-  let msg = renderError $ adjustFileName fname fpath err
+  msg <- lift $ GHC.liftIO $ fmap renderError $ adjustFileName fname fpath err
   when (warningsEnabled || not (isWarning $ err ^. severity)) $
     respond $ ClientStdout msg
 
@@ -352,22 +352,15 @@ runCommand (CmdType real file (line, col)) = do
             , "\"", t, "\""
             ]
 
-absoluteFileName :: GHC.SrcSpan -> IO GHC.SrcSpan
-absoluteFileName s@(GHC.UnhelpfulSpan _) = return s
-absoluteFileName (GHC.RealSrcSpan span') = do
-  let file = GHC.unpackFS $ GHC.srcSpanFile span'
-  file' <- GHC.mkFastString <$> canonicalizePath file
-  return $ GHC.RealSrcSpan $ GHC.mkRealSrcSpan
-    (GHC.mkRealSrcLoc file' (GHC.srcSpanStartLine span') (GHC.srcSpanStartCol span'))
-    (GHC.mkRealSrcLoc file' (GHC.srcSpanEndLine span') (GHC.srcSpanEndCol span'))
-
-adjustFileName :: GHC.FastString -> GHC.FastString -> ErrorInfo -> ErrorInfo
+adjustFileName :: GHC.FastString -> GHC.FastString -> ErrorInfo -> IO ErrorInfo
 adjustFileName fname fpath info = case info ^. location of
-  (GHC.UnhelpfulSpan _) -> inOtherFile ""
-  (GHC.RealSrcSpan span') -> if GHC.srcSpanFile span' == fname then info & location .~ fileSrcSpan span' else inOtherFile $ GHC.unpackFS fname
-  where inOtherFile f = info & messageChanges . mapped %~ ((f ++ ": ") ++)
+  (GHC.UnhelpfulSpan _) -> return $ inOtherFile Outputable.empty
+  (GHC.RealSrcSpan span') -> if GHC.srcSpanFile span' == fname then return $ info & location .~ fileSrcSpan span' else do
+    otherFile <- canonicalizePath $ GHC.unpackFS $ GHC.srcSpanFile span'
+    return $ inOtherFile $ Outputable.text $ otherFile ++ ": "
+  where inOtherFile f = info & messageChanges . mapped %~ (f Outputable.<>)
                              & location .~ firstLineSpan
-        firstLineSpan = GHC.RealSrcSpan $ GHC.mkRealSrcSpan (GHC.mkRealSrcLoc fname 1 1) (GHC.mkRealSrcLoc fname 1 1)
+        firstLineSpan = GHC.RealSrcSpan $ GHC.mkRealSrcSpan (GHC.mkRealSrcLoc fpath 1 1) (GHC.mkRealSrcLoc fpath 1 1)
         fileSrcSpan span' = GHC.RealSrcSpan $ GHC.mkRealSrcSpan (GHC.mkRealSrcLoc fpath lineStart colStart) (GHC.mkRealSrcLoc fpath lineEnd colEnd)
           where colStart = GHC.srcSpanStartCol span'
                 colEnd = GHC.srcSpanEndCol span'
@@ -378,14 +371,14 @@ adjustFileName fname fpath info = case info ^. location of
 
 logAction' :: IORef (S.Seq ErrorInfo) -> GHC.DynFlags -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.MsgDoc -> IO ()
 logAction' errorIn dflags sev sspan mstyle doc =
-  modifyIORef errorIn $ (S.|> ErrorInfo sev sspan mstyle id f)
-  where f sev' span' = Outputable.renderWithStyle dflags (ErrUtils.mkLocMessage sev' span' doc)
+  modifyIORef errorIn (S.|> ErrorInfo sev sspan mstyle id f)
+  where f g sev' span' = Outputable.renderWithStyle dflags (ErrUtils.mkLocMessage sev' span' $ g doc)
 
 #else
 
 logAction' :: IORef (S.Seq ErrorInfo) -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.Message -> IO ()
 logAction' errorIn sev sspan mstyle doc = modifyIORef errorIn (S.|> ErrorInfo sev sspan mstyle id f)
-  where f sev' span' = Outputable.renderWithStyle (ErrUtils.mkLocMessage span' doc)
+  where f g mod sev' span' = Outputable.renderWithStyle (ErrUtils.mkLocMessage span' $ g doc)
 
 
 #endif
