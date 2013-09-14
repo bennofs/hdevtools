@@ -74,7 +74,7 @@ cabalMiscOptions =
         sandboxConf = "cabal.sandbox.config"
         getSandboxDBs = do
           s <- readFile "cabal.sandbox.config"
-          return $ [packageDBFlag ++ " " ++ db | l <- lines s, "package-db:" `isPrefixOf` l
+          return [packageDBFlag ++ " " ++ db | l <- lines s, "package-db:" `isPrefixOf` l
                                                , let db = dropWhile isSpace $ drop (length "package-db:") l]
 
 getBuildInfoOptions :: BuildInfo -> [String]
