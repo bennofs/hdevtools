@@ -4,11 +4,13 @@ module Cabal where
 
 import           Config                                        (cProjectVersion)
 import           Control.Applicative
+import           Control.Lens
 import           Control.Monad                                 (guard)
 import           Data.Char
 import           Data.List
 import           Data.Maybe                                    (listToMaybe)
 import           Data.Monoid
+import           Data.Ord
 import           Data.Version
 import           Distribution.Compiler
 import qualified Distribution.ModuleName                       as MN
@@ -19,6 +21,7 @@ import           Distribution.PackageDescription.Parse         (ParseResult, par
 import           Distribution.System                           (buildPlatform)
 import qualified Distribution.Text                             as CT
 import           System.Directory
+import           System.FilePath
 import           Text.ParserCombinators.ReadP                  (readP_to_S)
 
 ghcVersion :: Version
@@ -30,12 +33,55 @@ parseCabalConfig contents = v >>= \v' -> case v' of
     (Right r) -> return $ fst r
   where v = return . finalizePackageDescription [] (const True) buildPlatform (CompilerId GHC ghcVersion) [] =<< parsePackageDescription contents
 
+-- | This function tests whether a given path is a prefix of another path. It returns 'Nothing' if the path isn't a prefix, otherwise
+-- it returns 'Just' the number of directory components of the prefix. Note that while this function doesn't canonicalize paths, it recognizes
+-- @"."@ and ignores it, but doesn't handle @".."@. It's meant to be used in infix form, like the 'isPrefixOf' function from 'Data.List'.
+-- Examples:
+--
+-- >>> "." `prefixPathOf` "abc/ad/def.txt"
+-- Just 0
+--
+-- >>> "../x" `prefixPathOf` "abc/ad/def"
+-- Nothing -- Always Nothing, even if the current directory is @x@. This function doesn't canonicalize paths!
+--
+-- >>> "tests" `prefixPathOf` "tests/1213.hs"
+-- Just 1 -- @tests@ has one directory component
+--
+-- 
+prefixPathOf :: FilePath -> FilePath -> Maybe Int
+"." `prefixPathOf` _ = Just 0
+dir `prefixPathOf` subdir = go dirParts subdirParts
+  where dirParts = filter (/= ".") $ map (under reversed $ strip '\\' . strip '/') $ splitPath dir
+        subdirParts = filter (/= ".") $ map (under reversed $ strip '\\' . strip '/') $ splitPath subdir
+
+        strip c (a:x) = if c == a then x else a:x
+        strip _ _ = []
+        
+        go [] _ = Just 0
+        go _ [] = Nothing
+        go (a:as) (b:bs) 
+          | a == b = succ <$> go as bs
+          | otherwise = Nothing
+
+-- | Find all maxima in a given list.
+maximaBy :: (a -> a -> Ordering) -> [a] -> [a]
+maximaBy _ [] = []
+maximaBy cmp (a:as) = go a as
+  where go x (b:bs) = case bs' of
+          (m:ms) -> case x `cmp` m of
+            LT -> m:ms
+            EQ -> x:m:ms
+            GT -> [x]
+          _ -> [x]
+          where bs' = go b bs
+        go x [] = [x]
+
 findBuildInfoFile :: PackageDescription -> String -> Either String BuildInfo
 findBuildInfoFile d f = case buildInfos of
   [bi] -> Right bi
   []   -> exitError "No matching build target (library, executable or benchmark) found"
   _   -> exitError  "Multiple matching build configurations found"
-  where buildInfos = filter (any (`isPrefixOf` f) . hsSourceDirs) $ allBuildInfo d
+  where buildInfos = maximaBy (comparing $ maximumOf $ to hsSourceDirs . traverse . to (`prefixPathOf` f) . traverse) $ allBuildInfo d
         sourceDirs = concatMap hsSourceDirs $ allBuildInfo d
         exitError msg = Left $ msg ++ " [Checked source directories: " ++ show sourceDirs ++ "]"
 
