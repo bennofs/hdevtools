@@ -25,15 +25,13 @@ import           Control.Monad.Reader.Class
 import           Control.Monad.State.Class
 import           Control.Proxy
 import           Control.Proxy.Concurrent
-import           Control.Proxy.Trans.Reader      hiding (ask, asks, local)
 import qualified Control.Proxy.Trans.Reader      as ReaderP
-import           Control.Proxy.Trans.State       hiding (get, gets, modify, put,
-                                                  state, stateT)
+import           Control.Proxy.Trans.Reader      hiding (ask, asks, local)
 import qualified Control.Proxy.Trans.State       as StateP
+import           Control.Proxy.Trans.State       hiding (get, gets, modify, put, state, stateT)
 import           Data.Foldable                   (traverse_)
 import           Data.IORef
-import           Data.List                       (find)
-import           Data.Maybe
+import           Data.List
 import qualified Data.Sequence                   as S
 import           Distribution.PackageDescription (allBuildInfo, hsSourceDirs)
 import           Distribution.ParseUtils
@@ -120,6 +118,7 @@ reconfigure = do
   status "Updating GHC options"
   opts <- use ghcOpts
   settings <- liftP ask
+  status $ "New options: " ++ intercalate " " (settings ^. extraOptions ++ opts)
   configOk <- newSession (settings ^. refErrors) (settings ^. extraOptions ++ opts)
   status "Processing configure result"
   needReconfig .= not configOk
@@ -169,13 +168,16 @@ setupCommandLoop cabal initialGhcOpts = do
 
   finishGHCstartup <- Event.new
 
-  _ <- forkIO $ do
-    GHC.runGhc (Just GHC.Paths.libdir) $ do
+  t <- myThreadId
+  let exception (SomeException e) = atomically $ do
+        void $ send serverInput $ ClientStderr $ "Exception: " ++ show e
+        void $ send serverInput $ ClientExit $ ExitFailure 2
+
+  _ <- forkIO $ forever $ 
+    handle exception $ GHC.runGhc (Just GHC.Paths.libdir) $ do
        GHC.liftIO $ Event.signal finishGHCstartup
        runProxy $ runReaderK settings $ evalStateK (defaultOptions & ghcOpts .~ initialGhcOpts) $
          hoist GHC.liftIO . recvS clientOutput >-> commandLoop >-> hoist GHC.liftIO . sendD serverInput
-
-  t <- myThreadId
 
   -- for some reason GHC changes the default ^C handlers. They don't work when used in a thread, so we reset
   -- them here, after GHC started to make sure we override GHC's handler.
@@ -193,9 +195,8 @@ newSession errorIn opts = handleGHCException $ do
        , GHC.ghcLink = GHC.NoLink
        , GHC.hscTarget = GHC.HscInterpreted
        }
-  (finalDynFlags, _, _) <- GHC.parseDynamicFlags updatedDynFlags (map GHC.noLoc $ ["-Wall"] ++ opts)
+  (finalDynFlags, _, _) <- GHC.parseDynamicFlags updatedDynFlags (map GHC.noLoc $ ["-Wall", "-O0"] ++ opts)
   void $ GHC.setSessionDynFlags finalDynFlags
-
 
 handleGHCException :: (Proxy p) => GHC.Ghc () -> Producer p ClientDirective GHC.Ghc Bool
 handleGHCException action = runIdentityP $ do
@@ -218,26 +219,34 @@ cabalCached file action = do
 
 setCabalPerFileOpts :: (Proxy p) => FilePath -> Producer (StateP Options (ReaderP Settings p)) ClientDirective GHC.Ghc ()
 setCabalPerFileOpts configPath = cabalCached configPath $ do
-  respond $ ClientLog "CabalFileOpts" "Loading cabal"
   file <- fmap GHC.unpackFS $ liftP $ readRef refFileName
   cabalDir <- lift $ GHC.liftIO $ canonicalizePath $ takeDirectory configPath
   fileRel <- lift $ GHC.liftIO $ makeRelative cabalDir <$> canonicalizePath file
+  respond $ ClientLog "CabalFileOpts" $ "Loading cabal (looking for file: " ++ fileRel ++ ")"
   config <- lift $ GHC.liftIO $ readFile configPath
   case parseCabalConfig config of
-    (ParseFailed _) -> respond $ ClientStderr "Warning: Parsing of the cabal config failed. Please correct it, or use --no-cabal."
-    (ParseOk _ r) -> do
+    (ParseFailed err) -> do
+      respond $ ClientLog "CabalFileOpts" $ "Cabal error:" ++ show err
+      respond $ ClientStderr "Warning: Parsing of the cabal config failed. Please correct it, or use --no-cabal."
+    (ParseOk _ pkgDesc) -> do
       let srcInclude = "-i" ++ takeDirectory file
-      let opts = fromMaybe [] $ getBuildInfoOptions =<< findBuildInfoFile r fileRel
-      respond $ ClientLog "CabalFileOpts" $ "Cabal: Adding options " ++ show opts
-      dynFlags <- lift GHC.getSessionDynFlags
-      (finalDynFlags, _, _) <- lift $ GHC.parseDynamicFlags dynFlags (map GHC.noLoc $ srcInclude : opts)
-      void $ handleGHCException $ void $ GHC.setSessionDynFlags $ finalDynFlags `GHC.dopt_unset` GHC.Opt_WarnIsError
+      case findBuildInfoFile pkgDesc fileRel of
+        Left err -> 
+          respond $ ClientLog "CabalFileOpts" $ "Couldn't find file: " ++ err
+        Right buildInfo -> do
+           let opts = getBuildInfoOptions buildInfo
+           respond $ ClientLog "CabalFileOpts" $ "Cabal: Adding options " ++ show opts
+           dynFlags <- lift GHC.getSessionDynFlags
+           (finalDynFlags, _, _) <- lift $ GHC.parseDynamicFlags dynFlags (map GHC.noLoc $ srcInclude : opts)
+           void $ handleGHCException $ void $ GHC.setSessionDynFlags $ finalDynFlags `GHC.dopt_unset` GHC.Opt_WarnIsError
 
 setAllCabalImportDirs :: (Proxy p) => FilePath -> Producer p ClientDirective GHC.Ghc ()
 setAllCabalImportDirs cabal = runIdentityP $ do
   config <- lift $ GHC.liftIO $ readFile cabal
   case parseCabalConfig config of
-    (ParseFailed _) -> return ()
+    (ParseFailed err) -> do
+      respond $ ClientLog "setAllCabalImportDirs" $ "Parsing failed: " ++ show err
+      return ()
     (ParseOk _ r) -> do
       let dirs = allBuildInfo r >>= hsSourceDirs
       respond $ ClientLog "setAllCabalImportDirs" $ "Added directories: " ++ show dirs

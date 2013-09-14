@@ -5,8 +5,10 @@ module Cabal where
 import           Config                                        (cProjectVersion)
 import           Control.Applicative
 import           Control.Monad                                 (guard)
+import           Data.Char
 import           Data.List
 import           Data.Maybe                                    (listToMaybe)
+import           Data.Monoid
 import           Data.Version
 import           Distribution.Compiler
 import qualified Distribution.ModuleName                       as MN
@@ -24,12 +26,18 @@ ghcVersion = fst $ head $ filter (null . snd) $ readP_to_S parseVersion cProject
 
 parseCabalConfig :: String -> ParseResult PackageDescription
 parseCabalConfig contents = v >>= \v' -> case v' of
-    (Left _) -> error "This is a bug in parseCabalConfig" -- We said all packages are available, so this should definitely not happen
+    (Left _) -> error "This is a bug in parseCabalConfig" -- We said all packages are available (const True), so this should definitely not happen
     (Right r) -> return $ fst r
   where v = return . finalizePackageDescription [] (const True) buildPlatform (CompilerId GHC ghcVersion) [] =<< parsePackageDescription contents
 
-findBuildInfoFile :: PackageDescription -> String -> Maybe BuildInfo
-findBuildInfoFile d f = listToMaybe $ filter (any (`isPrefixOf` f) . hsSourceDirs) $ allBuildInfo d
+findBuildInfoFile :: PackageDescription -> String -> Either String BuildInfo
+findBuildInfoFile d f = case buildInfos of
+  [bi] -> Right bi
+  []   -> exitError "No matching build target (library, executable or benchmark) found"
+  _   -> exitError  "Multiple matching build configurations found"
+  where buildInfos = filter (any (`isPrefixOf` f) . hsSourceDirs) $ allBuildInfo d
+        sourceDirs = concatMap hsSourceDirs $ allBuildInfo d
+        exitError msg = Left $ msg ++ " [Checked source directories: " ++ show sourceDirs ++ "]"
 
 findBuildInfoModule :: PackageDescription -> String -> Maybe BuildInfo
 findBuildInfoModule d m = findLibrary <|> findExe <|> findTestSuite
@@ -59,18 +67,23 @@ cabalMiscOptions =
   fmap concat $ sequence
   [ pureIfM (doesFileExist localDB) $ packageDBFlag ++ " " ++ localDB
   , ifM (doesFileExist macros) ["-optP-include", "-optP" ++ macros]
+  , doesFileExist sandboxConf >>= if' (return []) getSandboxDBs
   ]
   where localDB = "dist/package.conf.inplace"
         macros = "dist/build/autogen/cabal_macros.h"
+        sandboxConf = "cabal.sandbox.config"
+        getSandboxDBs = do
+          s <- readFile "cabal.sandbox.config"
+          return $ [packageDBFlag ++ " " ++ db | l <- lines s, "package-db:" `isPrefixOf` l
+                                               , let db = dropWhile isSpace $ drop (length "package-db:") l]
 
-getBuildInfoOptions :: BuildInfo -> Maybe [String]
-getBuildInfoOptions bi = do
-  o <- listToMaybe $ map snd $ filter ((== GHC) . fst) $ options bi
-  let o' = map ("-i" ++) $ hsSourceDirs bi
-  let o'' = map (("-X" ++) . CT.display) $ defaultExtensions bi
-  let deps = targetBuildDepends bi
-      o''' = map (("-package " ++) . CT.display . pkgName) deps
-  return $ o' ++ o'' ++ o ++ o''' ++ ["-hide-all-packages"]
-
+getBuildInfoOptions :: BuildInfo -> [String]
+getBuildInfoOptions bi = concat
+  [ concat ghcOpts
+  , map (mappend "-i") $ hsSourceDirs bi
+  , map (mappend "-X" . CT.display) $ defaultExtensions bi
+  , map (mappend "-package" . CT.display . pkgName)  $ targetBuildDepends bi
+  , ["-hide-all-packages"]
+  ]
   where pkgName (Dependency n _) = n
-
+        ghcOpts = map snd $ filter ((== GHC) . fst) $ options bi

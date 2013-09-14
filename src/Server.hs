@@ -63,19 +63,19 @@ isClientExit :: ClientDirective -> Bool
 isClientExit (ClientExit _) = True
 isClientExit _ = False
 
-takeUntilD :: (Monad m, Proxy p) => (a -> Bool) -> a' -> p a' a a' a m ()
-takeUntilD f = runIdentityK go
+takeWhileInclusiveD :: (Proxy p, Monad m) => (a -> Bool) -> a' -> p a' a a' a m ()
+takeWhileInclusiveD  p = runIdentityK go
   where go a' = do
           a <- request a'
-          a'' <- respond a
-          when (f a) $ go a''
+          a'2 <- respond a
+          when (p a) $ go a'2
 
 startServer :: Maybe FilePath -> N.Socket -> IO ()
 startServer cabal sock = do
   (inp,outp,rawi) <- setupCommandLoop cabal []
   void $ iterateWhile id $ acceptOne sock $ \clientHandle -> ignoreEPipe True $ do
     void $ atomically $ send rawi $ ClientLog "startServer" "New client connection"
-    a <- async $ runProxy $ recvS outp >-> takeUntilD (not . isClientExit) >-> mapD show >-> hPutStrLnD clientHandle
+    a <- async $ runProxy $ recvS outp >-> takeWhileInclusiveD (not . isClientExit) >-> mapD show >-> hPutStrLnD clientHandle
     r <- runProxy $ runMaybeK $ hGetLineS clientHandle >-> processRequest >-> leftD (sendD rawi) >-> rightD (sendD inp)
     do
       void $ atomically $ send rawi $ ClientLog "startServer" "Waiting for end of send process"
