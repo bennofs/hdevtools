@@ -378,7 +378,7 @@ logAction' errorIn dflags sev sspan mstyle doc =
 
 logAction' :: IORef (S.Seq ErrorInfo) -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.Message -> IO ()
 logAction' errorIn sev sspan mstyle doc = modifyIORef errorIn (S.|> ErrorInfo sev sspan mstyle id f)
-  where f g mod sev' span' = Outputable.renderWithStyle (ErrUtils.mkLocMessage span' $ g doc)
+  where f g sev' span' = Outputable.renderWithStyle (ErrUtils.mkLocMessage span' $ g doc)
 
 
 #endif
