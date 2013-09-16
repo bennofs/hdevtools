@@ -1,5 +1,6 @@
-hdevtools [![Build Status](https://travis-ci.org/bennofs/hdevtools.png?branch=master)](https://travis-ci.org/bennofs/hdevtools)
+hdevtools 
 =========
+[![Build Status](https://travis-ci.org/bennofs/hdevtools.png?branch=master)](https://travis-ci.org/bennofs/hdevtools)
 
 Persistent GHC powered background server for FAST Haskell development tools
 
@@ -69,8 +70,12 @@ details.
 
 ### Emacs ###
 
-I encourage the community to develop integration plugins for Emacs and other
-editors. In the mean time, please see the manual integration information below.
+[`flycheck`][5] has integrated support for hdevtools. To install it using ELPA with the [MELPA][6] or [Marmelade][7]
+repositories, just type:
+
+    :package-install
+    
+And type `flycheck` in the prompt that shows up. See the documentation of flycheck for more details. 
 
 ### Manual Editor Integration for any Editor ###
 
@@ -177,6 +182,9 @@ Credits
 client-server architecture it is much faster.
 
 [1]: http://hackage.haskell.org/package/hdevtools
-[2]: https://github.com/scrooloose/syntastic
-[3]: https://github.com/bitc/vim-hdevtools
+[2]: //github.com/scrooloose/syntastic
+[3]: //github.com/bitc/vim-hdevtools
 [4]: http://www.mew.org/~kazu/proj/ghc-mod/en/
+[5]: //github.com/flycheck/flycheck
+[6]: http://melpa.milkbox.net/
+[7]: http://marmalade-repo.org/
