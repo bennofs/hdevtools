@@ -4,21 +4,23 @@ module Client
     , serverCommand
     ) where
 
-import           Control.Exception    (finally, tryJust)
-import           Control.Monad        (guard, when)
-import           Control.Monad.IfElse (whenM)
-import           Daemonize            (daemonize)
-import           Network              (PortID (UnixSocket), connectTo)
-import           Server               (cleanupSocket, createListenSocket,
+import Control.Concurrent
+import Control.Exception    (finally, tryJust)
+import Control.Monad        (guard, when)
+import Control.Monad.IfElse (whenM)
+import Control.Monad.Loops
+import Daemonize            (daemonize)
+import Network              (PortID (UnixSocket), connectTo)
+import Server               (cleanupSocket, createListenSocket,
                                        startServer)
-import           System.Directory     (doesFileExist, removeFile)
-import           System.Exit          (exitFailure, exitWith)
-import           System.IO            (Handle, hClose, hFlush, hGetLine, hPrint,
-                                       hPutStrLn, stderr)
-import           System.IO.Error      (isDoesNotExistError)
-import           Types                (ClientDirective (..), Command (..),
+import System.Directory     (doesFileExist, removeFile)
+import System.Exit          (exitFailure, exitWith)
+import System.IO            (Handle, hClose, hFlush, hGetLine, hPrint,
+                                       hPutStrLn, stderr, stdout)
+import System.IO.Error      (isDoesNotExistError)
+import Types                (ClientDirective (..), Command (..),
                                        ServerDirective (..))
-import           Util                 (readMaybe)
+import Util                 (readMaybe)
 
 connect :: FilePath -> IO Handle
 connect = connectTo "" . UnixSocket
@@ -28,14 +30,18 @@ getServerStatus verbose sock = do
     h <- connect sock
     hPrint h SrvStatus
     hFlush h
-    startClientReadLoop verbose h
+    startClientReadLoop verbose h True
 
 stopServer :: Bool -> FilePath -> IO ()
 stopServer verbose sock = do
     h <- connect sock
     hPrint h SrvExit
     hFlush h
-    startClientReadLoop verbose h
+    startClientReadLoop verbose h False
+    putStr "Waiting for server to exit ... "
+    hFlush stdout
+    whileM_ (doesFileExist sock) $ threadDelay 100000 -- 100 ms
+    putStrLn "Done"
 
 serverCommand :: Bool -> Maybe FilePath -> FilePath -> Command -> [String] -> IO ()
 serverCommand verbose cabal sock cmd ghcOpts = do
@@ -44,31 +50,31 @@ serverCommand verbose cabal sock cmd ghcOpts = do
         Right h -> do
             hPrint h $ SrvCommand cmd ghcOpts
             hFlush h
-            startClientReadLoop verbose h
+            startClientReadLoop verbose h True
         Left _ -> do
              whenM (doesFileExist sock) $ removeFile sock
              s <- createListenSocket sock
              daemonize False $ startServer cabal s `finally` cleanupSocket sock s
              serverCommand verbose cabal sock cmd ghcOpts
 
-startClientReadLoop :: Bool -> Handle -> IO ()
-startClientReadLoop verbose h = do
+startClientReadLoop :: Bool -> Handle -> Bool -> IO ()
+startClientReadLoop verbose h exit = do
     message <- hGetLine h
     let clientDirective = readMaybe message
     case clientDirective of
-        Just (ClientStdout out) -> putStrLn out >> putStrLn "" >> startClientReadLoop verbose h
-        Just (ClientStderr err) -> hPutStrLn stderr err >> putStrLn "" >> startClientReadLoop verbose h
-        Just (ClientLog loc msg) -> when verbose (putStrLn $ "LOG [" ++ loc ++ "] " ++ msg) >> startClientReadLoop verbose h
-        Just (ClientExit exitCode) -> hClose h >> exitWith exitCode
-        Just (ClientUnexpectedError err) -> hClose h >> unexpectedError err
+        Just (ClientStdout out) -> putStrLn out >> putStrLn "" >> startClientReadLoop verbose h exit
+        Just (ClientStderr err) -> hPutStrLn stderr err >> putStrLn "" >> startClientReadLoop verbose h exit
+        Just (ClientLog loc msg) -> when verbose (putStrLn $ "LOG [" ++ loc ++ "] " ++ msg) >> startClientReadLoop verbose h exit
+        Just (ClientExit exitCode) -> hClose h >> when exit (exitWith exitCode)
+        Just (ClientUnexpectedError err) -> hClose h >> unexpectedError err exit
         Nothing -> do
             hClose h
-            unexpectedError $ "The server sent an invalid message to the client: " ++ show message
+            flip unexpectedError exit $ "The server sent an invalid message to the client: " ++ show message
 
-unexpectedError :: String -> IO ()
-unexpectedError err = do
+unexpectedError :: String -> Bool -> IO ()
+unexpectedError err exit = do
     hPutStrLn stderr banner
     hPutStrLn stderr err
     hPutStrLn stderr banner
-    exitFailure
+    when exit exitFailure
     where banner = replicate 78 '*'
