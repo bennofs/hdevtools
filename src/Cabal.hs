@@ -76,14 +76,34 @@ maximaBy cmp (a:as) = go a as
           where bs' = go b bs
         go x [] = [x]
 
+-- | Get ALL buildinfo, including disabled test-suites, benchmarks, etc ...
+-- We still exclude things that aren't buildable.
+reallyAllBuildInfo :: PackageDescription -> [BuildInfo]
+reallyAllBuildInfo pkg_descr = [ bi | Just lib <- [library pkg_descr]
+                                    , let bi = libBuildInfo lib
+                                    , buildable bi ]
+                            ++ [ bi | exe <- executables pkg_descr
+                                    , let bi = buildInfo exe
+                                    , buildable bi ]
+                            ++ [ bi | tst <- testSuites pkg_descr
+                                    , let bi = testBuildInfo tst
+                                    , buildable bi
+                                    , testEnabled tst ]
+                            ++ [ bi | tst <- benchmarks pkg_descr
+                                    , let bi = benchmarkBuildInfo tst
+                                    , buildable bi]
+
 findBuildInfoFile :: PackageDescription -> String -> Either String BuildInfo
 findBuildInfoFile d f = case buildInfos of
-  [bi] -> Right bi
-  []   -> exitError "No matching build target (library, executable or benchmark) found"
+  [bi] -> if has (traverse . to (`prefixPathOf` f) . _Just) $ hsSourceDirs bi
+           then Right bi
+           else noMatching
+  []   -> noMatching
   _   -> exitError  "Multiple matching build configurations found"
-  where buildInfos = maximaBy (comparing $ maximumOf $ to hsSourceDirs . traverse . to (`prefixPathOf` f) . traverse) $ allBuildInfo d
+  where buildInfos = maximaBy (comparing $ maximumOf $ to hsSourceDirs . traverse . to (`prefixPathOf` f) . traverse) $ reallyAllBuildInfo d
         sourceDirs = concatMap hsSourceDirs $ allBuildInfo d
         exitError msg = Left $ msg ++ " [Checked source directories: " ++ show sourceDirs ++ "]"
+        noMatching = exitError "No matching build target (library, executable or benchmark) found"
 
 findBuildInfoModule :: PackageDescription -> String -> Maybe BuildInfo
 findBuildInfoModule d m = findLibrary <|> findExe <|> findTestSuite
