@@ -373,13 +373,13 @@ adjustFileName fname fpath info = case info ^. location of
 
 logAction' :: IORef (S.Seq ErrorInfo) -> GHC.DynFlags -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.MsgDoc -> IO ()
 logAction' errorIn dflags sev sspan mstyle doc =
-  modifyIORef' errorIn (S.|> ErrorInfo sev sspan mstyle id f)
+  modifyIORef errorIn (S.|> ErrorInfo sev sspan mstyle id f)
   where f g sev' span' = Outputable.renderWithStyle dflags (ErrUtils.mkLocMessage sev' span' $ g doc)
 
 #else
 
 logAction' :: IORef (S.Seq ErrorInfo) -> GHC.Severity -> GHC.SrcSpan -> Outputable.PprStyle -> ErrUtils.Message -> IO ()
-logAction' errorIn sev sspan mstyle doc = modifyIORef' errorIn (S.|> ErrorInfo sev sspan mstyle id f)
+logAction' errorIn sev sspan mstyle doc = modifyIORef errorIn (S.|> ErrorInfo sev sspan mstyle id f)
   where f g sev' span' = Outputable.renderWithStyle (ErrUtils.mkLocMessage span' $ g doc)
 
 #endif
