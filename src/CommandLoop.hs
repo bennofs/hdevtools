@@ -37,6 +37,7 @@ import           Distribution.PackageDescription (allBuildInfo, hsSourceDirs)
 import           Distribution.ParseUtils
 import qualified DynFlags                        as GHC
 import qualified ErrUtils
+import qualified Exception
 import qualified FastString                      as GHC
 import qualified GHC
 import qualified GHC.Paths
@@ -171,15 +172,15 @@ setupCommandLoop cabal initialGhcOpts = do
   finishGHCstartup <- Event.new
 
   t <- myThreadId
-  let exception (SomeException e) = atomically $ do
-        void $ send serverInput $ ClientStderr $ "Exception: " ++ show e
+  let exception (SomeException e) = GHC.liftIO $ atomically $ do
+        void $ send serverInput $ ClientStderr $ "[setupCommandLoop] Unhandled GHC Exception: " ++ show e
         void $ send serverInput $ ClientExit $ ExitFailure 2
 
-  _ <- forkIO $ forever $ 
-    handle exception $ GHC.runGhc (Just GHC.Paths.libdir) $ do
+  _ <- forkIO $ GHC.runGhc (Just GHC.Paths.libdir) $ do
        GHC.liftIO $ Event.signal finishGHCstartup
-       runProxy $ runReaderK settings $ evalStateK (defaultOptions & ghcOpts .~ initialGhcOpts) $
-         hoist GHC.liftIO . recvS clientOutput >-> commandLoop >-> hoist GHC.liftIO . sendD serverInput
+       forever $ Exception.ghandle exception $
+         runProxy $ runReaderK settings $ evalStateK (defaultOptions & ghcOpts .~ initialGhcOpts) $
+           hoist GHC.liftIO . recvS clientOutput >-> commandLoop >-> hoist GHC.liftIO . sendD serverInput
 
   -- for some reason GHC changes the default ^C handlers. They don't work when used in a thread, so we reset
   -- them here, after GHC started to make sure we override GHC's handler.
