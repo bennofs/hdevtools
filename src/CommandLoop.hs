@@ -233,7 +233,7 @@ setCabalPerFileOpts configPath = cabalCached configPath $ do
       respond $ ClientStderr "Warning: Parsing of the cabal config failed. Please correct it, or use --no-cabal."
     (ParseOk _ pkgDesc) -> do
       let srcInclude = "-i" ++ takeDirectory file
-      respond $ ClientLog "CabalFileOpts" $ "build infos: " ++ show (allBuildInfo pkgDesc)
+      respond $ ClientLog "CabalFileOpts" $ "build infos: " ++ show (reallyAllBuildInfo pkgDesc)
       flags <- case findBuildInfoFile pkgDesc fileRel of
         Left err -> do
           respond $ ClientLog "CabalFileOpts" $ "Couldn't find file: " ++ err

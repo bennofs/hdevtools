@@ -87,8 +87,7 @@ reallyAllBuildInfo pkg_descr = [ bi | Just lib <- [library pkg_descr]
                                     , buildable bi ]
                             ++ [ bi | tst <- testSuites pkg_descr
                                     , let bi = testBuildInfo tst
-                                    , buildable bi
-                                    , testEnabled tst ]
+                                    , buildable bi]
                             ++ [ bi | tst <- benchmarks pkg_descr
                                     , let bi = benchmarkBuildInfo tst
                                     , buildable bi]
