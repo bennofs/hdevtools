@@ -94,11 +94,10 @@ reallyAllBuildInfo pkg_descr = [ bi | Just lib <- [library pkg_descr]
 
 findBuildInfoFile :: PackageDescription -> String -> Either String BuildInfo
 findBuildInfoFile d f = case buildInfos of
-  [bi] -> if has (traverse . to (`prefixPathOf` f) . _Just) $ hsSourceDirs bi
+  (bi:_) -> if has (traverse . to (`prefixPathOf` f) . _Just) $ hsSourceDirs bi
            then Right bi
            else noMatching
   []   -> noMatching
-  _   -> exitError  "Multiple matching build configurations found"
   where buildInfos = maximaBy (comparing $ maximumOf $ to hsSourceDirs . traverse . to (`prefixPathOf` f) . traverse) $ reallyAllBuildInfo d
         sourceDirs = concatMap hsSourceDirs $ allBuildInfo d
         exitError msg = Left $ msg ++ " [Checked source directories: " ++ show sourceDirs ++ "]"
