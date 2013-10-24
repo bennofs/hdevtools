@@ -131,7 +131,9 @@ processCommandObj (command,opts') = do
   opts <- use ghcOpts
   when (opts /= opts') $ do
     logmsg "Reconfigure needed"
+    ghcOpts .= opts'
     needReconfig .= True
+    reconfigure
   liftP $ writeRef refErrors S.empty
   result <- runCommand command
   logmsg "Finished executing command. Start collecting errors"
