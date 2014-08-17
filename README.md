@@ -1,4 +1,4 @@
-hdevtools 
+hdevtools * not maintained fork * 
 =========
 [![Build Status](https://travis-ci.org/bennofs/hdevtools.png?branch=master)](https://travis-ci.org/bennofs/hdevtools)
 
